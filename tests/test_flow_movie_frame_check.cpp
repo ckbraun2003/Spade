@@ -226,4 +226,36 @@ TEST(FlowMovieFrameCheck, WriteFrameCachesAPassingFrameAndRefusesAFaultUnwritten
     EXPECT_FALSE(fs::exists(dir.path() / "frame.tmp")) << "nothing begun";
 }
 
+// The clip's largest vorticity, read from the cache's frame HEADERS alone (a frame is 0.27 GB; its header is a few hundred bytes): the largest of the first N frames' channel maxima, and a
+// frame that is not there is refused naming its file, so a fixed range is never taken over a partial clip.
+TEST(FlowMovieFrameCheck, TheCacheNamesTheLargestChannelMaxOverItsFramesFromTheHeaders) {
+    spade::FlowVolume f;
+    f.header.nx = 3;
+    f.header.ny = 2;
+    f.header.nz = 2;
+    const std::size_t halves = 3u * 2u * 2u * spade::kFlowHalvesPerCell;
+    f.v.assign(halves, 0x0000u);
+    f.s.assign(halves, 0x0000u);
+    const spade::test::TempDir dir("frame_check_peak");
+    const FrameBound bound{.expected_speed = 5.0f};
+    const float peaks[3] = {100.0f, 250.0f, 180.0f};
+    for (uint32_t k = 0; k < 3u; ++k) {
+        f.header.channel_max[spade::kFlowVorticity] = peaks[k];
+        f.header.channel_max[spade::kFlowPressure] = 1.0f + static_cast<float>(k);
+        ASSERT_TRUE(flow_movie::write_frame(dir.path(), k, f, flow_movie::FrameLog{.step = 10u * (k + 1u), .time = 0.1 * k, .live = {}}, bound).has_value());
+    }
+    const auto all = flow_movie::largest_header_max(dir.path(), 3u, spade::kFlowVorticity);
+    ASSERT_TRUE(all.has_value());
+    EXPECT_FLOAT_EQ(*all, 250.0f);
+    const auto first = flow_movie::largest_header_max(dir.path(), 1u, spade::kFlowVorticity);
+    ASSERT_TRUE(first.has_value());
+    EXPECT_FLOAT_EQ(*first, 100.0f) << "only the first N frames count";
+    const auto other = flow_movie::largest_header_max(dir.path(), 3u, spade::kFlowPressure);
+    ASSERT_TRUE(other.has_value());
+    EXPECT_FLOAT_EQ(*other, 3.0f) << "any channel";
+    const auto short_of = flow_movie::largest_header_max(dir.path(), 4u, spade::kFlowVorticity);
+    ASSERT_FALSE(short_of.has_value());
+    EXPECT_NE(short_of.error().context.find("frame-00003.bin"), std::string::npos) << short_of.error().context;
+}
+
 }  // namespace

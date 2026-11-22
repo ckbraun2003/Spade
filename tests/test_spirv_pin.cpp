@@ -275,12 +275,17 @@ const Row kRows[] = {
     {&spade::compute::gen::kSpvVariants_rotors, "rotors", 32, 0x6d59a88deb8de7bfull},
     {&spade::compute::gen::kSpvVariants_rotors, "rotors", 64, 0x0406e0ac98e5f6dfull},
     {&spade::compute::gen::kSpvVariants_rotors, "rotors", 128, 0x1816b0a38307911full},
-    {&spade::compute::gen::kSpvVariants_sensor_gnss, "sensor_gnss", 32, 0x854c23616d09a025ull},
-    {&spade::compute::gen::kSpvVariants_sensor_gnss, "sensor_gnss", 64, 0x5fb791a8bdf48005ull},
-    {&spade::compute::gen::kSpvVariants_sensor_gnss, "sensor_gnss", 128, 0xc71797259f222145ull},
-    {&spade::compute::gen::kSpvVariants_sensor_imu, "sensor_imu", 32, 0xadcc2664630f477bull},
-    {&spade::compute::gen::kSpvVariants_sensor_imu, "sensor_imu", 64, 0xcc1780c9b753fedbull},
-    {&spade::compute::gen::kSpvVariants_sensor_imu, "sensor_imu", 128, 0xe8868504fd6db51bull},
+    // sensor_gnss and sensor_imu RE-RECORDED (physics/sensor-errors, O140 phase 1): layouts.slang renamed three IMU pads, `_reserved0` and one GNSS pad to
+    // their new fields (range_a, range_g, adc_bits, turn_on_sigma_a/g, turn_on_bias) at the SAME offsets, and the struct member names are debug names in
+    // the SPIR-V, so the six rows below moved while the arithmetic did not: no kernel reads a renamed field. The proof: the whole `-L gpu` (459 run, 0
+    // failed) with the GpuParity bands and the device digests unchanged. Old rows: gnss 0x854c23616d09a025 / 0x5fb791a8bdf48005 / 0xc71797259f222145,
+    // imu 0xadcc2664630f477b / 0xcc1780c9b753fedb / 0xe8868504fd6db51b.
+    {&spade::compute::gen::kSpvVariants_sensor_gnss, "sensor_gnss", 32, 0x2aea467be50911dcull},
+    {&spade::compute::gen::kSpvVariants_sensor_gnss, "sensor_gnss", 64, 0x47375a9d3fd6493cull},
+    {&spade::compute::gen::kSpvVariants_sensor_gnss, "sensor_gnss", 128, 0xafd54560d157227cull},
+    {&spade::compute::gen::kSpvVariants_sensor_imu, "sensor_imu", 32, 0xcd7335b2563d1fd2ull},
+    {&spade::compute::gen::kSpvVariants_sensor_imu, "sensor_imu", 64, 0x0a6ec4ed9023cdb2ull},
+    {&spade::compute::gen::kSpvVariants_sensor_imu, "sensor_imu", 128, 0xa0e747e91dffccf2ull},
 };
 
 }  // namespace

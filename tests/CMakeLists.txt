@@ -157,6 +157,7 @@ add_executable(spade_tests
     test_quadrotor.cpp
     test_x500_ground_contact.cpp
     test_step_convergence.cpp
+    test_sensor_errors.cpp
     test_imu.cpp
     test_camera.cpp
     test_camera_capacities.cpp
@@ -321,6 +322,7 @@ add_executable(spade_tests
     test_fc_link_tcp.cpp
     test_autopilot_map.cpp
     test_x500_contact_model.cpp
+    test_sensor_profiles.cpp
     test_openframe5f_build_table.cpp
     test_flow_movie_particles.cpp
     test_flow_movie_stream.cpp

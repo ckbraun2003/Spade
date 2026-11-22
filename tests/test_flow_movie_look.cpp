@@ -666,3 +666,25 @@ TEST(FlowMovieLook, TheRecordSaysTheAirNearTheDroneIsDrawnThinnedAndTheFieldIsUn
     EXPECT_NE(note.find("the air within 0.75 m of the drone is drawn thinned so the drone shows; the field is unchanged"), std::string::npos) << note;
 }
 
+// THE CLIP-WIDE RANGE (the lead, O144: the per-frame top made the cloud step by up to 13.6% between frames): with a peak set (the largest |omega| over the clip's frames, read from the cache's
+// headers before drawing) the cloud's, and the ladder's, top is vorticity_max x that peak in EVERY frame, so a colour means the same vorticity throughout; with none set (0) each frame's own
+// largest is the reference, as it always was.
+TEST(FlowMovieQLook, AClipWidePeakFixesTheTopForEveryFrameAndZeroLeavesEachFramesOwn) {
+    flow_movie::QLook look;
+    EXPECT_FLOAT_EQ(look.vorticity_peak, 0.0f) << "per frame unless a run sets it";
+    const auto own = flow_movie::vorticity_cloud(volume_with_ranges(10.0f, 200.0f), look);
+    ASSERT_TRUE(own.has_value());
+    EXPECT_NEAR(own->range_max, 200.0f * look.vorticity_max, 1e-4f);
+    look.vorticity_peak = 400.0f;
+    const auto weak = flow_movie::vorticity_cloud(volume_with_ranges(10.0f, 200.0f), look);
+    const auto strong = flow_movie::vorticity_cloud(volume_with_ranges(10.0f, 380.0f), look);
+    ASSERT_TRUE(weak.has_value());
+    ASSERT_TRUE(strong.has_value());
+    EXPECT_NEAR(weak->range_max, 400.0f * look.vorticity_max, 1e-4f);
+    EXPECT_FLOAT_EQ(weak->range_max, strong->range_max) << "the same top in a weak frame and a strong one";
+    EXPECT_FALSE(flow_movie::vorticity_cloud(volume_with_ranges(10.0f, 0.0f), look).has_value()) << "a frame with no vorticity still shows none";
+    const auto isos = flow_movie::q_isos(volume_with_ranges(10.0f, 200.0f), look);
+    ASSERT_FALSE(isos.empty());
+    ASSERT_TRUE(isos[0].colour_by.has_value());
+    EXPECT_NEAR(isos[0].colour_by->range_max, 400.0f * look.vorticity_max, 1e-4f) << "the ladder shares the cloud's range";
+}

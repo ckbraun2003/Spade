@@ -38,6 +38,9 @@ struct FrameLog {
                                              spade::FlowVolume& volume, FrameLog& log);
 // The file frame `frame` is in (a streamed run deletes spent ones by name).
 [[nodiscard]] std::filesystem::path frame_file(const std::filesystem::path& dir, uint32_t frame);
+// The largest channel maximum over the first `frames` cached frames, read from their HEADERS alone (a frame is 0.27 GB; its header a few hundred bytes), ignoring a non-finite maximum; 0
+// when no frame has the channel. A frame that is not there or is not a cached frame is refused, naming its file, so a range taken over it is never taken over a partial clip.
+[[nodiscard]] spade::Result<float> largest_header_max(const std::filesystem::path& dir, uint32_t frames, spade::FlowChannel channel);
 // How many frames the cache holds, counted from 0 without a gap.
 [[nodiscard]] uint32_t cached_frames(const std::filesystem::path& dir);
 
