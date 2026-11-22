@@ -92,7 +92,7 @@ if (-not $OutDir) {
 }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 & docker stop -t 15 $name *> $null
-& docker logs $name > (Join-Path $OutDir 'px4-stdout.log') 2>&1
+& docker logs $name 2>&1 | ForEach-Object { "$_" } | Set-Content -Path (Join-Path $OutDir 'px4-stdout.log') -Encoding UTF8  # UTF-8, not the UTF-16 a `>` writes
 $logDir = Join-Path $OutDir 'px4-log'
 & docker cp "${name}:$px4Dir/rootfs/log" $logDir *> $null
 & docker rm -f $name *> $null
