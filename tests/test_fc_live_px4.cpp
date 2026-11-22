@@ -153,7 +153,10 @@ TEST(FcLivePx4, TheLockstepRunsAgainstTheRealImageAndTheCommanderSaysReady) {
          << "last_time_usec: " << rep.last_time_usec << "\n"
          << "wall_s: " << wall << "\n"
          << "wall_wait_max_ms: " << std::chrono::duration<double, std::milli>(rep.wall_wait_max).count() << "\n"
-         << "parser_dropped_bytes: " << rep.parser.dropped_bytes << "\n"
+         << "parser_frames: " << rep.parser.frames << "\n"
+         << "parser_bad_crc: " << rep.parser.bad_crc << "\n"
+         << "parser_unknown_msgid: " << rep.parser.unknown_msgid << "\n"
+         << "parser_garbage_bytes: " << rep.parser.garbage_bytes << "\n"
          << "armed_seen: " << (ever_armed ? "yes" : "no") << "\n"
          << "max_motor_output: " << max_motor << "\n"
          << "commander_check_exit: " << commander_rc << "\n";
