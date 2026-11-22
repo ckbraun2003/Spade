@@ -14,12 +14,14 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "../sandbox/live_ledger.hpp"
 #include "../sandbox/live_smoke.hpp"
 #include "../sandbox/png_writer.hpp"
 
@@ -565,4 +567,31 @@ TEST(LiveSmokePng, AnImageLargerThanOneStoredBlockSpansSeveral) {
     EXPECT_EQ(d.raw[801], 0u);              // row 1's filter byte
     EXPECT_EQ(d.raw[802], rgba[800]);       // row 1 starts 800 bytes into the image
     EXPECT_EQ(d.raw.back(), rgba.back());
+}
+
+// ===========================================================================
+// The tour's ledger itself (sandbox/live_ledger.hpp, a header so that this can read it): the steps and stills the tour declares, in order. A
+// tour that counts steps or stills re-counts when this changes (docs/design/consumers.md).
+// ===========================================================================
+namespace {
+std::vector<std::string> ledger_steps() {
+    std::vector<std::string> out;
+    for (const auto& st : spade::sandbox::live::kSteps) out.push_back(std::string(st.main) + "." + std::string(st.sub));
+    return out;
+}
+}  // namespace
+
+TEST(LiveSmokeLedger, TheTourDeclaresItsStepsAndStillsInOrder) {
+    const std::vector<std::string> steps = ledger_steps();
+    EXPECT_EQ(steps.size(), 24u);
+    EXPECT_EQ(spade::sandbox::live::kSnapshots.size(), 21u);
+    const auto at = [&](std::string_view name) {
+        return std::find(steps.begin(), steps.end(), std::string(name)) - steps.begin();
+    };
+    EXPECT_LT(at("editor.add_drone"), at("editor.airflow"));
+    EXPECT_LT(at("editor.airflow"), at("editor.add_objects"));
+    // a skip injection of a declared step is accepted (it makes the run red); of one the ledger lacks, refused
+    using spade::sandbox::live::Injection;
+    using spade::sandbox::live::validate_injections;
+    EXPECT_TRUE(validate_injections({{Injection::Kind::skip, "editor.airflow"}}, steps, {}).has_value());
 }
