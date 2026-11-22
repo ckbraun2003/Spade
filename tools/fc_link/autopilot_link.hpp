@@ -36,6 +36,8 @@ struct ExchangeConfig {
     double density = 1.225;                             // kg/m^3 and the battery's state of charge, for rotor_omega_for_duty
     double soc = 1.0;
     uint32_t imu_binding = 0;                           // the index of the IMU in the sensors the host was opened with
+    std::optional<uint32_t> baro_binding;               // the barometer's and the magnetometer's, when the host has them bound (slice 2)
+    std::optional<uint32_t> mag_binding;
 };
 
 struct ExchangeResult {

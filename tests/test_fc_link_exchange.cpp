@@ -214,4 +214,113 @@ TEST(FcLinkExchange, ATransportFailureIsReturnedAndNothingIsCommanded) {
     EXPECT_TRUE(host->commands_bytes().size() <= 24u) << "no command was logged (an empty commands.bin is its header only)";
 }
 
+// Slice 2: the barometer and magnetometer groups of HIL_SENSOR. A group is marked in fields_updated only when its sample is NEW in this period
+// (PX4 treats an unmarked group as not updated), and a boot message carries the held state's pressure and field. The rig's dividers: IMU 8, mag 20,
+// baro 40 ticks, so over five 8-tick periods the mag sample is due in period 3 (tick 19, taken after tick 24) and both in period 5 (tick 39).
+constexpr uint32_t kImuBits = 0x003Fu;
+constexpr uint32_t kMagBits = 0x01C0u;   // xmag, ymag, zmag
+constexpr uint32_t kBaroBits = 0x1A00u;  // abs_pressure, pressure_alt, temperature (no differential pressure)
+
+TEST(FcLinkExchange, BaroAndMagAreMarkedWhenTheirSampleIsNewAndConvertedToHilUnits) {
+    const spade::scene::ModelFile model = x500();
+    ASSERT_TRUE(model.model.propulsion.has_value());
+    std::optional<Rig> a = make_rig(kImuDivider, 40, 20, kDt, 1, -9.81f);
+    std::optional<Rig> b = make_rig(kImuDivider, 40, 20, kDt, 1, -9.81f);
+    ASSERT_TRUE(a.has_value() && b.has_value());
+    const std::vector<SensorBinding> sensors_a = all_bindings(*a);  // IMU 0, barometer 1, magnetometer 2
+    const std::vector<SensorBinding> sensors_b = all_bindings(*b);
+    spade::Result<LockstepHost> host_a = LockstepHost::open(a->sim, a->vehicle, sensors_a);
+    spade::Result<LockstepHost> host_b = LockstepHost::open(b->sim, b->vehicle, sensors_b);
+    ASSERT_TRUE(host_a.has_value() && host_b.has_value());
+
+    auto seen = std::make_shared<Seen>();
+    fcl::ExchangeConfig config;
+    config.chain = &*model.model.propulsion;
+    config.baro_binding = 1;
+    config.mag_binding = 2;
+    auto link = fcl::AutopilotLink::create(
+        [seen](const mav::HilSensor& s, const std::optional<mav::HilGps>&) -> spade::Result<fcl::ActuatorReply> {
+            seen->sensors.push_back(s);
+            return reply_of({0.5f, 0.5f, 0.5f, 0.5f});
+        },
+        config);
+    ASSERT_TRUE(link.has_value());
+
+    ASSERT_TRUE(link->exchange(*host_a).has_value());  // the boot message (zero boot steps)
+    const std::array<double, 4> duties{0.5, 0.5, 0.5, 0.5};  // what every reply asks, so the reference host flies the same
+    const auto omega = fcl::autopilot_duties_to_rotor_commands(*model.model.propulsion, duties, config.density, config.soc);
+    ASSERT_TRUE(omega.has_value());
+    ASSERT_TRUE(host_b->command(*omega).has_value());
+    std::vector<spade::fc_host::Sample> baro_b, mag_b;
+    std::vector<uint32_t> expected_bits;
+    for (int period = 1; period <= 5; ++period) {
+        ASSERT_TRUE(link->exchange(*host_a).has_value());
+        ASSERT_TRUE(host_b->advance_to(static_cast<uint64_t>(period) * kImuDivider * kDt).has_value());
+        const auto taken = host_b->take_sensors();
+        ASSERT_TRUE(taken.has_value());
+        uint32_t bits = kImuBits;
+        for (const spade::fc_host::Sample& s : *taken) {
+            if (s.kind == spade::fc_host::SensorKind::baro) { baro_b.push_back(s); bits |= kBaroBits; }
+            if (s.kind == spade::fc_host::SensorKind::mag) { mag_b.push_back(s); bits |= kMagBits; }
+        }
+        expected_bits.push_back(bits);
+    }
+    ASSERT_EQ(seen->sensors.size(), 6u);  // the boot message and five periods
+    for (std::size_t i = 0; i < 5; ++i) {
+        EXPECT_EQ(seen->sensors[i + 1].fields_updated, expected_bits[i]) << "period " << (i + 1);
+    }
+    EXPECT_EQ(expected_bits[2], kImuBits | kMagBits) << "the rig's mag sample is due in period 3";
+    EXPECT_EQ(expected_bits[4], kImuBits | kMagBits | kBaroBits) << "and both in period 5";
+    ASSERT_EQ(baro_b.size(), 1u);
+    ASSERT_EQ(mag_b.size(), 2u);
+    spade::sensors::BaroSample baro{};
+    std::memcpy(&baro, baro_b[0].bytes.data(), sizeof(baro));
+    spade::sensors::MagSample mag{};
+    std::memcpy(&mag, mag_b[1].bytes.data(), sizeof(mag));
+    const mav::HilSensor& last = seen->sensors[5];
+    EXPECT_FLOAT_EQ(last.abs_pressure, baro.pressure_pa / 100.0f) << "hPa";
+    EXPECT_FLOAT_EQ(last.temperature, baro.temperature_c);
+    EXPECT_FLOAT_EQ(last.pressure_alt, baro.pressure_alt_m);
+    const glm::dvec3 field = spade::fc_link::frames::body_to_frd(config.frame, glm::dvec3(mag.field_body_ut)) / 100.0;  // uT to gauss
+    EXPECT_FLOAT_EQ(last.xmag, static_cast<float>(field.x));
+    EXPECT_FLOAT_EQ(last.ymag, static_cast<float>(field.y));
+    EXPECT_FLOAT_EQ(last.zmag, static_cast<float>(field.z));
+}
+
+TEST(FcLinkExchange, ABootMessageCarriesTheHeldPressureAndField) {
+    const spade::scene::ModelFile model = x500();
+    ASSERT_TRUE(model.model.propulsion.has_value());
+    std::optional<Rig> rig = make_rig(kImuDivider, 40, 20, kDt, 1, -9.81f);
+    ASSERT_TRUE(rig.has_value());
+    const std::vector<SensorBinding> sensors = all_bindings(*rig);
+    spade::Result<LockstepHost> host = LockstepHost::open(rig->sim, rig->vehicle, sensors);
+    ASSERT_TRUE(host.has_value());
+    const auto held = host->boot_readings(1);
+    ASSERT_TRUE(held.has_value());
+    ASSERT_TRUE(held->has_baro && held->has_mag);
+
+    auto seen = std::make_shared<Seen>();
+    fcl::ExchangeConfig config;
+    config.chain = &*model.model.propulsion;
+    config.baro_binding = 1;
+    config.mag_binding = 2;
+    auto link = fcl::AutopilotLink::create(
+        [seen](const mav::HilSensor& s, const std::optional<mav::HilGps>&) -> spade::Result<fcl::ActuatorReply> {
+            seen->sensors.push_back(s);
+            return reply_of({0, 0, 0, 0}, true);
+        },
+        config);
+    ASSERT_TRUE(link.has_value());
+    ASSERT_TRUE(link->exchange(*host).has_value());
+    ASSERT_EQ(seen->sensors.size(), 1u);
+    const mav::HilSensor& m = seen->sensors[0];
+    EXPECT_EQ(m.fields_updated, kImuBits | kMagBits | kBaroBits) << "every group is fresh in a boot message";
+    EXPECT_FLOAT_EQ(m.abs_pressure, held->pressure_pa / 100.0f);
+    EXPECT_FLOAT_EQ(m.temperature, held->temperature_c);
+    const glm::dvec3 field = spade::fc_link::frames::body_to_frd(config.frame, glm::dvec3(held->mag_body_ut)) / 100.0;
+    EXPECT_FLOAT_EQ(m.xmag, static_cast<float>(field.x));
+    EXPECT_FLOAT_EQ(m.ymag, static_cast<float>(field.y));
+    EXPECT_FLOAT_EQ(m.zmag, static_cast<float>(field.z));
+}
+
 }  // namespace
