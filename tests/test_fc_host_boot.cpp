@@ -45,8 +45,7 @@ TEST(FcHostBoot, TheHeldVehicleReadsGravityOnTheAccelerometerAndNoRotation) {
     EXPECT_NEAR(r->accel_body.z, 0.0f, 1e-5f);
     EXPECT_EQ(r->gyro_body, glm::vec3(0.0f));
     EXPECT_TRUE(r->has_baro);
-    EXPECT_GT(r->pressure_pa, 101300.0f) << "ISA at 10 m";
-    EXPECT_LT(r->pressure_pa, 101320.0f);
+    EXPECT_NEAR(r->pressure_pa, 101325.0f * std::pow(1.0f - 0.0065f * 10.0f / 288.15f, 5.2559f), 1.0f) << "the ISA pressure at 10 m, about 101205 Pa";
     EXPECT_TRUE(r->has_mag);
     EXPECT_NEAR(r->mag_body_ut.x, 20.0f, 1e-3f) << "level, so the body axes are the world axes";
     EXPECT_NEAR(r->mag_body_ut.y, -40.0f, 1e-3f);
