@@ -9,6 +9,9 @@ bool camera_advance(CameraSensorRow& row) noexcept {
     return true;
 }
 
+// RED stub: the pass does nothing yet.
+void schedule_cameras(std::span<const BodyState>, std::span<CameraSensorRow>, std::span<CameraFrameDue>, uint64_t) noexcept {}
+
 namespace {
 
 bool finite(float v) noexcept { return std::isfinite(v); }

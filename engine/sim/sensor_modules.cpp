@@ -210,6 +210,9 @@ constexpr GradeDecl kCpuOnlyGrade{.cpu = Grade::reference, .vulkan = Grade::abse
 
 }  // namespace
 
+// RED stub: the camera module declares nothing yet, so no array named camera_sensors exists.
+ModuleDesc camera_module() { return {.name = "camera", .grade = kCpuOnlyGrade}; }
+
 ModuleDesc baro_module() {
     return {.name = "baro", .passes = kBaroPasses, .state = kBaroArrays, .streams = kBaroStreams, .grade = kCpuOnlyGrade};
 }

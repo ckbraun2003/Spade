@@ -855,6 +855,7 @@ struct SetGrade {
 // absent: a Vulkan world that holds either is refused at create() (L6).
 [[nodiscard]] ModuleDesc baro_module();
 [[nodiscard]] ModuleDesc mag_module();
+[[nodiscard]] ModuleDesc camera_module();
 
 // The CPU function a GPU recipe stands for; nullptr for `none`. A pass that
 // names a recipe must carry exactly this function (compile_schedule refuses
