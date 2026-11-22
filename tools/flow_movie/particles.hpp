@@ -313,18 +313,21 @@ private:
 
 // A still of the particle look from a run's KEPT frames, with no solve (L106b): the driver carried through frames 0 to `last` in order, each read once.
 // `read(k, volume, time_s)` fills frame k's volume and its simulated time (the step is the difference between frames, as a streamed run's is) or returns the
-// error; `pool_of()` gives the seed pool, asked once, right after frame 0 is read (the pool comes from a frame's log, the held drone's rotors). The driver
+// error; `pool_of()` gives the seed pool, asked once, right after frame 0 is read (the pool comes from a frame's log, the held drone's rotors). Each step follows the velocity from the previous stored frame to this one in time (B1). The driver
 // keeps its snapshots as in a streamed run, so at(last) shows the field the still draws. A frame that cannot be read or advanced stops the pass, named.
 template <typename Read, typename PoolOf>
 [[nodiscard]] spade::Result<void> advance_through_frames(ParticleDriver& driver, uint32_t last, Read&& read, PoolOf&& pool_of) {
-    spade::FlowVolume volume;
+    spade::FlowVolume volume, previous;
     double time_s = 0.0;
     for (uint32_t k = 0; k <= last; ++k) {
         if (auto got = read(k, volume, time_s); !got) {
             return std::unexpected(spade::Error{got.error().code, "particles: frame " + std::to_string(k) + " of 0 to " + std::to_string(last) + ": " + got.error().context});
         }
         if (k == 0u && !driver.has_pool()) driver.set_pool(pool_of());
-        if (auto stepped = driver.advance(k, volume, time_s); !stepped) return stepped;
+        // Each step runs from the previous stored frame's velocity to this one's, in time (every frame is on disk, so the next is always there); frame 0 moves nothing.
+        const spade::Result<void> stepped = k == 0u ? driver.advance(k, volume, time_s) : driver.advance(k, previous, time_s, &volume);
+        if (!stepped) return stepped;
+        std::swap(previous, volume);
     }
     return {};
 }
