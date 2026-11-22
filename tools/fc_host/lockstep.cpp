@@ -252,6 +252,15 @@ Result<void> LockstepHost::command(std::span<const float> omega) {
     return {};
 }
 
+// RED stubs: the trace API compiles and says it is not built.
+uint64_t LockstepHost::trace_ticks() const noexcept { return 0; }
+std::string LockstepHost::trace_hash() const { return {}; }
+Result<std::vector<std::byte>> LockstepHost::trace_bytes() const { return std::unexpected(Error{Code::unavailable, "fc_host: trace_bytes is not built yet"}); }
+std::vector<std::byte> LockstepHost::commands_bytes() const { return {}; }
+Result<void> LockstepHost::replay_commands(std::span<const std::byte>, uint64_t) {
+    return std::unexpected(Error{Code::unavailable, "fc_host: replay_commands is not built yet"});
+}
+
 const vehicles::ModelType& LockstepHost::model() const noexcept { return *model_; }
 
 }  // namespace spade::fc_host
