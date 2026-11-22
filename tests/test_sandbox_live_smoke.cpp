@@ -593,5 +593,7 @@ TEST(LiveSmokeLedger, TheTourDeclaresItsStepsAndStillsInOrder) {
     // a skip injection of a declared step is accepted (it makes the run red); of one the ledger lacks, refused
     using spade::sandbox::live::Injection;
     using spade::sandbox::live::validate_injections;
-    EXPECT_TRUE(validate_injections({{Injection::Kind::skip, "editor.airflow"}}, steps, {}).has_value());
+    const std::vector<Injection> skip_airflow = {{Injection::Kind::skip, "editor.airflow"}};
+    const std::vector<KnownOpen> none;
+    EXPECT_TRUE(validate_injections(skip_airflow, steps, none).has_value());
 }
