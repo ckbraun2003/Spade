@@ -645,3 +645,24 @@ TEST(LiveSmokeOnly, TheStepsToRunAreTheChosenOnesAndWhatTheyNeed) {
     const std::vector<std::string> want_both = {"drone_box.attitude", "editor.open", "editor.x500_feet"};
     EXPECT_EQ(steps_to_run(both, declared), want_both) << "ledger order, not the list's";
 }
+
+// What a run owes at its end under --only: the verification run of editor.x500_feet failed 25 whole-tour checks (every poster and still of the steps
+// it had not run).
+TEST(LiveSmokeOnly, AShortRunOwesOnlyTheFilesOfItsOwnChapters) {
+    using spade::sandbox::live::missing_still_is_anomaly;
+    using spade::sandbox::live::poster_expected;
+    using spade::sandbox::live::steps_to_run;
+    const std::vector<std::string> declared = ledger_steps();
+    const std::vector<std::string> only = {"editor.x500_feet"};
+    const std::vector<std::string> ran = steps_to_run(only, declared);  // editor.open, editor.x500_feet
+    EXPECT_TRUE(poster_expected(ran, "editor")) << "editor.open writes the editor's poster";
+    EXPECT_FALSE(poster_expected(ran, "drone_box"));
+    EXPECT_FALSE(poster_expected(ran, "airflow"));
+    EXPECT_FALSE(poster_expected(ran, "bodies"));
+    EXPECT_FALSE(poster_expected(ran, "batch"));
+    for (const char* main : {"drone_box", "airflow", "editor", "bodies", "batch"}) {
+        EXPECT_TRUE(poster_expected(declared, main)) << "the whole tour owes every poster: " << main;
+    }
+    EXPECT_TRUE(missing_still_is_anomaly(std::vector<std::string>{})) << "the whole tour still fails a still that was not written";
+    EXPECT_FALSE(missing_still_is_anomaly(only)) << "a short run writes only its own stills";
+}
