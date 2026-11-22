@@ -97,16 +97,19 @@ void init_imu_row(const RowInit& in) noexcept {
     row.rate_divider = imu.rate_divider;
     row.phase = 0u;
     row.mount_pos = imu.mount_pos;
-    row._p0 = 0.0f;
+    row.range_a = imu.range_a;
     row.mount_orient = glm::normalize(imu.mount_orient);
     row.sigma_a = imu.sigma_a;
     row.sigma_g = imu.sigma_g;
     row.sigma_ba = imu.sigma_ba;
     row.sigma_bg = imu.sigma_bg;
     row.bias_a = glm::vec3(0.0f);
-    row._p1 = 0.0f;
+    row.range_g = imu.range_g;
     row.bias_g = glm::vec3(0.0f);
-    row._p2 = 0.0f;
+    row.adc_bits = imu.adc_bits;
+    // BEFORE reseed_imu_row below: the reseed takes the turn-on offset from these two sigmas.
+    row.turn_on_sigma_a = imu.turn_on_sigma_a;
+    row.turn_on_sigma_g = imu.turn_on_sigma_g;
     // Seeded from the REGISTERED WorldParams row -- the world's rng
     // authority (see WorldConfig's "NO `seed` MEMBER" note) -- and from
     // the WORLD-LOCAL slot, so a world's noise does not depend on where
@@ -114,7 +117,6 @@ void init_imu_row(const RowInit& in) noexcept {
     // function, so this and reseed() derive it one way (TD-9).
     reseed_imu_row(in.row, *in.params, in.local_slot);
     row.last_index = 0;
-    row._reserved0 = 0;
     // LAST, like body_flags::active in init_body: until `kind` is set
     // the row is inert to the sensor passes, so a partially
     // written row can never be sampled.
@@ -142,14 +144,34 @@ Result<void> validate_imu_spawn(std::span<const std::byte> spawn) {
         // both sides -- the same discipline world_set.cpp's in_range() uses.
         return invalid("every sigma must be finite and >= 0");
     }
+    if (!finite(sensor.range_a) || !(sensor.range_a >= 0.0f)) return invalid("range_a must be finite and >= 0 (0 is unlimited)");
+    if (!finite(sensor.range_g) || !(sensor.range_g >= 0.0f)) return invalid("range_g must be finite and >= 0 (0 is unlimited)");
+    // 0 (no quantization) or an integer 1..24: the range check first, so the integer test never casts a NaN or a huge value.
+    if (!(sensor.adc_bits == 0.0f || (sensor.adc_bits >= 1.0f && sensor.adc_bits <= 24.0f &&
+                                       static_cast<float>(static_cast<int>(sensor.adc_bits)) == sensor.adc_bits))) {
+        return invalid("adc_bits must be 0 or an integer in 1..24");
+    }
+    if (sensor.adc_bits != 0.0f && sensor.range_a == 0.0f && sensor.range_g == 0.0f) {
+        // Bits are a resolution WITHIN a range (the lsb is 2 * range / 2^bits); with neither range set they quantise nothing.
+        return invalid("adc_bits needs a range_a or a range_g: the quantum is 2 * range / 2^adc_bits");
+    }
+    if (!finite(sensor.turn_on_sigma_a) || !(sensor.turn_on_sigma_a >= 0.0f)) return invalid("turn_on_sigma_a must be finite and >= 0");
+    if (!finite(sensor.turn_on_sigma_g) || !(sensor.turn_on_sigma_g >= 0.0f)) return invalid("turn_on_sigma_g must be finite and >= 0");
     return {};
 }
 
-// ONLY `noise`. The bias states, the divider phase, the ring cursor and the
-// ring itself are HISTORY: a reseed changes the future draws, not the past
-// (Simulation::reseed's contract).
+// `noise`, and -- ONLY for a channel whose turn-on sigma is above 0 -- that channel's bias, started afresh from the
+// turn-on stream (sensors/imu.hpp), so each episode of a reseeded batch gets its own offset. A defaults-off row writes
+// ONLY `noise`: the bias states, the divider phase, the ring cursor and the ring itself are HISTORY, a reseed changes
+// the future draws, not the past (Simulation::reseed's contract), and no digest of a row without a turn-on moves.
 void reseed_imu_row(std::span<std::byte> row, const WorldParams& params, uint32_t local_slot) noexcept {
-    row_as<sensors::ImuSensorRow>(row).noise = sensors::imu_noise_stream(params.seed, local_slot);
+    sensors::ImuSensorRow& imu = row_as<sensors::ImuSensorRow>(row);
+    imu.noise = sensors::imu_noise_stream(params.seed, local_slot);
+    if (imu.turn_on_sigma_a > 0.0f || imu.turn_on_sigma_g > 0.0f) {
+        const sensors::ImuTurnOn on = sensors::imu_turn_on_bias(params.seed, local_slot, imu.turn_on_sigma_a, imu.turn_on_sigma_g);
+        if (imu.turn_on_sigma_a > 0.0f) imu.bias_a = on.accel;
+        if (imu.turn_on_sigma_g > 0.0f) imu.bias_g = on.gyro;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -190,12 +212,13 @@ void init_gnss_row(const RowInit& in) noexcept {
     row.sigma_v = gnss.sigma_v;
     row.sigma_vel = gnss.sigma_vel;
     row.bias_tau_s = gnss.bias_tau_s;
+    // BEFORE reseed_gnss_row below: the reseed takes the turn-on bias from these two.
+    row.sigma_bias = gnss.sigma_bias;
+    row.turn_on_bias = gnss.turn_on_bias != 0u ? 1.0f : 0.0f;
     reseed_gnss_row(in.row, *in.params, in.local_slot);  // the declared stream's derivation, as init_imu_row's
     row.last_index = 0;
     row.bias_retention = sensors::gnss_bias_retention(fix_dt, gnss.bias_tau_s);
     row.bias_drive = sensors::gnss_bias_drive(fix_dt, gnss.bias_tau_s, gnss.sigma_bias);
-    row.sigma_bias = gnss.sigma_bias;
-    row._p2 = 0.0f;
     row._reserved0 = 0;
     // LAST, like init_imu_row's: until `kind` is set the row is inert to
     // the sensor passes, so a partially written row can never be
@@ -223,12 +246,21 @@ Result<void> validate_gnss_spawn(std::span<const std::byte> spawn) {
         !finite(sensor.bias_tau_s)) {
         return invalid("every sigma and bias_tau_s must be finite and >= 0");
     }
+    if (sensor.turn_on_bias > 1u) return invalid("turn_on_bias must be 0 or 1");
+    // With bias_tau_s <= 0 the retention and the drive are both 0 (gnss_bias_retention / gnss_bias_drive), so the first fix would erase the offset drawn at
+    // spawn: a silent no-op. Refused instead (the baro and mag treat tau <= 0 as the bias disabled, turn-on included). A constant offset is a very long tau.
+    if (sensor.turn_on_bias != 0u && !(sensor.bias_tau_s > 0.0f)) {
+        return invalid("turn_on_bias needs bias_tau_s > 0, a constant offset is a very long tau");
+    }
     return {};
 }
 
-// ONLY `noise`, as reseed_imu_row: the bias, the phase and the ring are history.
+// `noise`, and -- ONLY for a row with turn_on_bias set -- the bias, started afresh from the turn-on stream, as
+// reseed_imu_row: a defaults-off row writes only `noise`, and the bias, the phase and the ring are history.
 void reseed_gnss_row(std::span<std::byte> row, const WorldParams& params, uint32_t local_slot) noexcept {
-    row_as<sensors::GnssSensorRow>(row).noise = sensors::gnss_noise_stream(params.seed, local_slot);
+    sensors::GnssSensorRow& gnss = row_as<sensors::GnssSensorRow>(row);
+    gnss.noise = sensors::gnss_noise_stream(params.seed, local_slot);
+    if (gnss.turn_on_bias != 0.0f) gnss.bias = sensors::gnss_turn_on_bias(params.seed, local_slot, gnss.sigma_bias);
 }
 
 // ---------------------------------------------------------------------------

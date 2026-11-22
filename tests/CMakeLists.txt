@@ -157,6 +157,7 @@ add_executable(spade_tests
     test_quadrotor.cpp
     test_x500_ground_contact.cpp
     test_step_convergence.cpp
+    test_sensor_errors.cpp
     test_imu.cpp
     test_camera.cpp
     test_camera_capacities.cpp

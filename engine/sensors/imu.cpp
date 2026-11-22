@@ -28,6 +28,29 @@ namespace {
 
 }  // namespace
 
+// SIX NORMALS FROM THE TURN-ON STREAM, in this order: accel x y z, then gyro x y z, whatever the sigmas are (a zero sigma
+// scales its normals to zero), so the draw is a function of the seed and the slot alone.
+ImuTurnOn imu_turn_on_bias(uint64_t world_seed, uint32_t local_slot, float sigma_a, float sigma_g) noexcept {
+    rng::Stream stream = rng::make_stream(world_seed, kImuTurnOnDomainTag, local_slot);
+    const glm::vec3 accel = draw_gauss3(stream);
+    const glm::vec3 gyro = draw_gauss3(stream);
+    return ImuTurnOn{sigma_a * accel, sigma_g * gyro};
+}
+
+// Clamp to +-range, then round to the lattice. The lsb is 2 * range / 2^bits (a division by a power of two is exact scaling);
+// the rounding is in double, an integer truncation of value / lsb +- 0.5, half away from zero -- no libm, and exact for the
+// 24 bits the spawn allows (|value / lsb| <= 2^23). The result is a whole number of lsbs, which float holds exactly.
+float imu_limit_and_quantise(float value, float range, float adc_bits) noexcept {
+    if (!(range > 0.0f)) return value;
+    const float limited = value > range ? range : (value < -range ? -range : value);
+    if (!(adc_bits >= 1.0f)) return limited;
+    const uint32_t bits = static_cast<uint32_t>(adc_bits);
+    const double lsb = static_cast<double>(2.0f * range) / static_cast<double>(1u << bits);
+    const double steps = static_cast<double>(limited) / lsb;
+    const int64_t whole = static_cast<int64_t>(steps >= 0.0 ? steps + 0.5 : steps - 0.5);
+    return static_cast<float>(static_cast<double>(whole) * lsb);
+}
+
 void synthesize_imu(std::span<const BodyState> bodies, std::span<ImuSensorRow> sensors,
                     std::span<ImuSample> rings, uint64_t tick) noexcept {
     for (std::size_t s = 0; s < sensors.size(); ++s) {
@@ -119,6 +142,15 @@ void synthesize_imu(std::span<const BodyState> bodies, std::span<ImuSensorRow> s
         sample._p0 = 0.0f;
         sample.gyro = gyro_true + row.bias_g + row.sigma_g * white_g;
         sample._p1 = 0.0f;
+
+        // THE CONVERTER, after bias and white noise, per axis in the mount frame. Skipped outright when a channel has no
+        // range, so a row with the new fields at zero runs exactly the arithmetic it ran before them.
+        if (row.range_a != 0.0f) {
+            for (int axis = 0; axis < 3; ++axis) sample.accel[axis] = imu_limit_and_quantise(sample.accel[axis], row.range_a, row.adc_bits);
+        }
+        if (row.range_g != 0.0f) {
+            for (int axis = 0; axis < 3; ++axis) sample.gyro[axis] = imu_limit_and_quantise(sample.gyro[axis], row.range_g, row.adc_bits);
+        }
 
         // Monotonic, per sensor, starting at 1 (editor tech spec TA5; see sensors/rings.hpp).
         row.last_index += 1u;

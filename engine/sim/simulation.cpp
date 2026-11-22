@@ -2618,7 +2618,28 @@ Result<GnssSensorRef> Simulation::add_gnss_sensor(BodyRef ref, const GnssSensorS
     return GnssSensorRef{row->world_index, row->slot};
 }
 
+namespace {
+// A spawn field the GPU twin does not carry is refused on a Vulkan world, naming the call and the field (Code::unavailable: the same posture as a module
+// absent on a backend, L6). Core's rotor `tau_down` refusal takes the same helper: whichever branch lands first defines it, the other uses it.
+[[nodiscard]] Result<void> refuse_on_vulkan(bool vulkan, const char* call, const char* field, const char* why) {
+    if (!vulkan) return {};
+    return std::unexpected(Error{Code::unavailable, std::string(call) + ": '" + field + "' is not available on a Vulkan world (" + why + ")"});
+}
+}  // namespace
+
 Result<ImuSensorRef> Simulation::add_imu_sensor(BodyRef ref, const ImuSensorSpawn& sensor) {
+    // The converter (range and quantum) is CPU-only: the Slang twin does not read these fields. The turn-on offset is only an initial state: no refusal.
+    const bool vulkan = vulkan_backend_ != nullptr;
+    const char* const why = "the GPU twin has no converter";
+    if (sensor.range_a != 0.0f) {
+        if (Result<void> r = refuse_on_vulkan(vulkan, "add_imu_sensor", "range_a", why); !r) return std::unexpected(r.error());
+    }
+    if (sensor.range_g != 0.0f) {
+        if (Result<void> r = refuse_on_vulkan(vulkan, "add_imu_sensor", "range_g", why); !r) return std::unexpected(r.error());
+    }
+    if (sensor.adc_bits != 0.0f) {
+        if (Result<void> r = refuse_on_vulkan(vulkan, "add_imu_sensor", "adc_bits", why); !r) return std::unexpected(r.error());
+    }
     const Result<RowRef> row = attach_row_impl(ref, table_index(imu_id_), std::as_bytes(std::span(&sensor, 1)),
                                                "add_imu_sensor");
     if (!row) return std::unexpected(row.error());
