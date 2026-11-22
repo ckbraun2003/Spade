@@ -249,17 +249,20 @@ TEST(X500ContactModel, ComposedAndInstantiatedItRestsOnItsFeet) {
 // WHERE THE EDITOR PLACES IT
 // ===========================================================================
 
-// The Library panel puts an item's origin rest_height() over the floor: physics::lowest_contact_point() of the model at its design frame's origin, level and still (the L9
-// contact set). For a model with a shape the sim ignores that set (the shape is its one ground response), so this is only the height the editor starts the drone at; it
-// should be the height it rests at, or the drone drops or pops on the first step. The model is the ORIGINAL's, whose parts are the contact file's.
+// The Library panel puts an item's origin rest_height() over the floor: physics::lowest_contact_point() of the model at its design frame's origin, level and still. For a
+// model with a shape the sim ignores the L9 contact set (the shape is its one ground response), so the placement must come from the shape too, or the drone is put where
+// it does not rest: the first run of this test, with the function reading the parts, put the X500's feet 0.133 m under the floor (the origin 0.0821 m up, not 0.2153 m).
+// The model is the CONTACT FILE's, shape and all.
 TEST(X500ContactModel, TheEditorsPlacedAtHeightIsTheRestHeight) {
-    const spade::vehicles::ModelType model = load_original().model;
+    const spade::Result<sc::ModelFile> loaded = sc::load_model_file(repo_file(kContactFile));
+    ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
+    const spade::vehicles::ModelType& model = loaded->model;
     const spade::FrameState b = spade::to_body_state(spade::FrameState{glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(0.0f)},
                                                      glm::normalize(model.design_to_principal), model.com_offset);
     spade::BodyState body{};
     body.pos = b.pos;
     body.orient = b.orient;
     const std::optional<float> low = spade::physics::lowest_contact_point(model, body);
-    ASSERT_TRUE(low.has_value()) << "the model has no contact set";
-    EXPECT_NEAR(-*low, kDesignOriginAtRest, 2.0e-3f) << "the editor would place the origin " << -*low << " m over the floor; the drone rests with it " << kDesignOriginAtRest << " m over";
+    ASSERT_TRUE(low.has_value()) << "the model has no contact set or shape";
+    EXPECT_NEAR(-*low, kDesignOriginAtRest, 1.0e-4f) << "the editor would place the origin " << -*low << " m over the floor; the drone rests with it " << kDesignOriginAtRest << " m over";
 }
