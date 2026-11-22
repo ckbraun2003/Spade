@@ -8,6 +8,7 @@
 #include <string_view>
 #include <utility>
 
+#include "core/rng.hpp"
 #include "physics/blade_azimuth.hpp"
 #include "sensors/baro.hpp"
 #include "sensors/gnss.hpp"
@@ -118,6 +119,14 @@ template <class Sample_, class Row>
     return sensors::ring_poll<Sample_>(window, (*rows)[ref.slot].last_index, since, out);
 }
 
+[[nodiscard]] Result<void> check_sigmas(const BootConfig& c, const char* who) {
+    for (const float sigma : {c.sigma_accel, c.sigma_gyro, c.sigma_pressure_pa, c.sigma_mag_ut}) {
+        if (!std::isfinite(sigma) || sigma < 0.0f) return std::unexpected(invalid(std::string(who) + ": a sigma must be finite and >= 0 (got " + std::to_string(sigma) + ")"));
+    }
+    return {};
+}
+
+constexpr std::string_view kBootStreamTag = "spade.fc_host.boot";
 constexpr std::string_view kHashSeedText = "spade.trace.v1";
 constexpr std::string_view kTraceMagic = "SPTR";
 constexpr std::string_view kCommandsMagic = "SPCM";
@@ -139,6 +148,10 @@ struct LockstepHost::Recorded {
     std::vector<float> psi;
     std::vector<std::byte> command_bytes;
     uint64_t commands = 0;
+    bool boot_noted = false;
+    uint64_t boot_steps = 0;
+    uint64_t boot_end_time_usec = 0;
+    BootConfig boot;
 };
 
 SensorBinding SensorBinding::of(ImuSensorRef ref) noexcept {
@@ -417,6 +430,9 @@ Result<std::vector<std::byte>> LockstepHost::trace_bytes() const {
     put_u32(out, static_cast<uint32_t>(sizeof(sensors::BaroSample)));
     put_u32(out, static_cast<uint32_t>(sizeof(sensors::MagSample)));
     for (const char c : rec.hash) out.push_back(static_cast<std::byte>(c));
+    put_u64(out, rec.boot_steps);
+    put_u64(out, rec.boot_end_time_usec);
+    put_u64(out, rec.boot_noted ? rec.boot.seed : 0u);
     while (out.size() < kTraceHeaderBytes) out.push_back(std::byte{0});
     out.insert(out.end(), rec.tick_bytes.begin(), rec.tick_bytes.end());
     out.insert(out.end(), rec.sample_bytes.begin(), rec.sample_bytes.end());
@@ -473,12 +489,63 @@ Result<void> LockstepHost::replay_commands(std::span<const std::byte> commands, 
     return {};
 }
 
-// RED stubs: the boot API compiles and says it is not built.
-Result<BootReadings> LockstepHost::boot_readings(uint64_t, const BootConfig&) const {
-    return std::unexpected(Error{Code::unavailable, "fc_host: boot_readings is not built yet"});
+Result<BootReadings> LockstepHost::boot_readings(uint64_t boot_step, const BootConfig& config) const {
+    if (tick() != 0) {
+        return std::unexpected(invalid("boot_readings: the world is held only before tick 0 (this host is at tick " + std::to_string(tick()) + ")"));
+    }
+    if (Result<void> r = check_sigmas(config, "boot_readings"); !r) return std::unexpected(r.error());
+    const Result<const BodyState*> body = sim_->body(vehicle_.body);
+    if (!body) return std::unexpected(invalid("boot_readings: " + body.error().context));
+    const Result<const WorldParams*> world = sim_->world_params(vehicle_.body.world_index);
+    if (!world) return std::unexpected(invalid("boot_readings: " + world.error().context));
+    const glm::quat orient = (*body)->orient;
+
+    // The noise: a stream of its own, a pure function of (seed, boot_step), drawn in a fixed order whether or not a sensor is bound.
+    rng::Stream stream = rng::make_stream(config.seed, kBootStreamTag, boot_step);
+    glm::vec3 accel_noise;
+    glm::vec3 gyro_noise;
+    glm::vec3 mag_noise;
+    for (int i = 0; i < 3; ++i) accel_noise[i] = stream.next_gauss();
+    for (int i = 0; i < 3; ++i) gyro_noise[i] = stream.next_gauss();
+    const float pressure_noise = stream.next_gauss();
+    for (int i = 0; i < 3; ++i) mag_noise[i] = stream.next_gauss();
+
+    BootReadings out;
+    out.boot_step = boot_step;
+    out.accel_body = glm::conjugate(orient) * (-(*world)->gravity) + config.sigma_accel * accel_noise;
+    out.gyro_body = config.sigma_gyro * gyro_noise;
+    out.position = (*body)->pos;
+    out.velocity = (*body)->vel;
+    for (const SensorBinding& b : sensors_) {
+        if (b.kind == SensorKind::baro && !out.has_baro) {
+            const Result<std::span<const sensors::BaroSensorRow>> rows = sim_->module_rows<sensors::BaroSensorRow>("baro_sensors", b.row.world_index);
+            if (!rows || b.row.slot >= rows->size()) return std::unexpected(invalid("boot_readings: the barometer row is gone"));
+            const sensors::BaroSensorRow& row = (*rows)[b.row.slot];
+            const float height = row.world_origin_altitude_m + ((*body)->pos + orient * row.mount_pos).y;
+            const sensors::BaroTruth truth = sensors::baro_truth(height, row.sea_level_pressure_pa, row.sea_level_temperature_k, row.lapse_k_per_m);
+            out.has_baro = true;
+            out.pressure_pa = truth.pressure_pa + config.sigma_pressure_pa * pressure_noise;
+            out.temperature_c = truth.temperature_k - 273.15f;
+        } else if (b.kind == SensorKind::mag && !out.has_mag) {
+            const Result<std::span<const sensors::MagSensorRow>> rows = sim_->module_rows<sensors::MagSensorRow>("mag_sensors", b.row.world_index);
+            if (!rows || b.row.slot >= rows->size()) return std::unexpected(invalid("boot_readings: the magnetometer row is gone"));
+            const sensors::MagSensorRow& row = (*rows)[b.row.slot];
+            out.has_mag = true;
+            out.mag_body_ut = sensors::mag_truth(orient, row.mount_orient, row.field_world_ut) + config.sigma_mag_ut * mag_noise;
+        }
+    }
+    return out;
 }
-Result<void> LockstepHost::note_boot(uint64_t, uint64_t, const BootConfig&) {
-    return std::unexpected(Error{Code::unavailable, "fc_host: note_boot is not built yet"});
+
+Result<void> LockstepHost::note_boot(uint64_t boot_steps, uint64_t boot_end_time_usec, const BootConfig& config) {
+    if (tick() != 0) return std::unexpected(invalid("note_boot: the boot ends at tick 0 (this host is at tick " + std::to_string(tick()) + ")"));
+    if (Result<void> r = check_sigmas(config, "note_boot"); !r) return r;
+    Recorded& rec = *recorded_;
+    rec.boot_noted = true;
+    rec.boot_steps = boot_steps;
+    rec.boot_end_time_usec = boot_end_time_usec;
+    rec.boot = config;
+    return {};
 }
 
 const vehicles::ModelType& LockstepHost::model() const noexcept { return *model_; }
