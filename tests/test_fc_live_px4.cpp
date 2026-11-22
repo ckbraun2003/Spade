@@ -122,8 +122,7 @@ TEST(FcLivePx4, TheLockstepRunsAgainstTheRealImageAndTheCommanderSaysReady) {
             const double wall_now = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall0).count();
             std::ofstream(out / "lockstep-progress.txt", std::ios::app)
                 << "step " << k << " of " << steps << "   sim " << (static_cast<double>(k) * 0.004) << " s   wall " << wall_now << " s   replies " << link->report().replies
-                << "   px4_no_reply 0   px4_stale_reply 0   px4_link_closed 0   motors armed " << (r->armed ? "yes" : "no") << "
-";
+                << "   px4_no_reply 0   px4_stale_reply 0   px4_link_closed 0   motors armed " << (r->armed ? "yes" : "no") << '\n';
         }
         if (k == (steps * 4) / 5) {
             commander = std::async(std::launch::async, [&] {
