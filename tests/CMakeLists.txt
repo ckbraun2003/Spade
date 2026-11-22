@@ -133,6 +133,7 @@ add_executable(spade_tests
     test_airflow_blade.cpp
     test_airflow_bemt_uiuc.cpp
     test_airflow_line.cpp
+    test_airflow_line_aperture.cpp
     test_airflow_line_v2.cpp
     test_airflow_line_torque_gap.cpp
     test_airflow_line_tip.cpp
