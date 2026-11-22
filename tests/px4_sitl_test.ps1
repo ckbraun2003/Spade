@@ -18,6 +18,10 @@
                   and still ends in `exec <px4> <etc> -s etc/init.d-posix/rcS -d`; the script exits 0
       no box      no such container: exit 0 and `none` (as before)
 
+    RULE for a case whose purpose is a path the OLD code would mis-resolve (a drive-relative `\name\run` resolves against the real drive root, which a
+    temp working folder does not contain): give it a name that can only land somewhere harmless and unique (`\spade-px4-sitl-test-<random>\run`), and have
+    the test LIST and REPORT anything it finds there. The test never deletes anything outside its own temp folder.
+
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File tests\px4_sitl_test.ps1 <repo root>
 #>
@@ -192,13 +196,18 @@ exit 0
     Expect 'relative' (($cwdAfter -join '|') -eq ($cwdBefore -join '|')) "nothing was created in the repository root (before: $($cwdBefore -join ',') after: $($cwdAfter -join ','))"
 
     # only a FULLY QUALIFIED path is a run folder: a drive letter then :\ or :/, or a UNC \server\share ("\temp" and "C:foo" are rooted but not qualified)
-    foreach ($bad in @('\temp\run', 'C:foo')) {
+    $uniq = 'spade-px4-sitl-test-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
+    foreach ($bad in @("\$uniq\run", 'C:foo')) {
         Set-Content -LiteralPath $state 'x'
         $env:FAKE_LABELS_JSON = (@{ 'spade.outdir' = $bad } | ConvertTo-Json -Compress)
         $lo = & $ps -NoProfile -ExecutionPolicy Bypass -File $script -RunId t1 -Stop -Docker $fake 2>&1 | ForEach-Object { "$_" }
         Expect "not qualified ($bad)" ($LASTEXITCODE -eq 6) "exit 6 (got $LASTEXITCODE): $($lo -join ' ')"
         Expect "not qualified ($bad)" (Test-Path -LiteralPath $state) 'the container is left alone'
     }
+    # a drive-root stray from the old code would sit at <drive>:\<unique>; report it (never delete it)
+    $rootStray = "$([IO.Path]::GetPathRoot($work))$uniq"
+    $strayFiles = if (Test-Path -LiteralPath $rootStray) { @(Get-ChildItem -LiteralPath $rootStray -Recurse -Force | ForEach-Object FullName) } else { @() }
+    Expect 'drive root' ($strayFiles.Count -eq 0) "a refused drive-relative folder wrote under the drive root ($rootStray): $($strayFiles -join ', '). NOT deleted; remove it by hand"
     $cwdLeft = @(Get-ChildItem -LiteralPath $runCwd -Force | ForEach-Object Name)
     Expect 'cwd' ($cwdLeft.Count -eq 0) "the script's working folder stayed empty (got: $($cwdLeft -join ','))"
 
