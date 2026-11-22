@@ -878,3 +878,39 @@ TEST(FlowMovieQLook, TheTubeNoteSaysWhatTheTubesAreHowTheyAreColouredAndHowTheyA
     EXPECT_NE(wider.find("5 frames"), std::string::npos) << wider;
     EXPECT_EQ(wider.find("one cell"), std::string::npos) << "no spatial smoothing asked: none said: " << wider;
 }
+
+// ---- O183 (B3): do the tubes reach the box's floor? A tube cut flat by the open floor face is an artifact the wake fade cannot hide (a surface cannot fade). The check reads the solve's own frame:
+// whether any cell of the floor layer(s) has q_hat at or above the tubes' LOWEST level, and the height above the floor of the lowest such cell anywhere.
+TEST(FlowMovieQLook, ATubeThatReachesTheFloorFailsTheCheckAndOneThatStopsShortPasses) {
+    flow_movie::QLook look;
+    look.q_peak = 10.0f;  // levels 50%, 25%, 10% of it: the lowest tube is q_hat = 1
+    const auto column = [&](uint32_t j_first, float value) {
+        FlowVolume v = blank(8, 10, 8);  // 10 cells up, 0.004 m each (blank's cell)
+        for (uint32_t j = j_first; j < 10; ++j) set_q(v, 4, j, 4, value);
+        return v;
+    };
+    const auto reaches = flow_movie::tube_floor_check(column(0, 3.0f), look, 1u);
+    EXPECT_TRUE(reaches.any_tube);
+    EXPECT_TRUE(reaches.reaches_floor) << "a tube down to the floor layer is cut by the face";
+    EXPECT_NEAR(reaches.lowest_height_m, 0.5f * 0.004f, 1e-6f) << "the lowest tube cell's centre above the floor";
+    const auto short_of = flow_movie::tube_floor_check(column(3, 3.0f), look, 1u);
+    EXPECT_TRUE(short_of.any_tube);
+    EXPECT_FALSE(short_of.reaches_floor);
+    EXPECT_NEAR(short_of.lowest_height_m, 3.5f * 0.004f, 1e-6f);
+    // two floor layers: a tube that stops in the second layer fails a two-layer check, passes a one-layer one
+    const auto layer2 = column(1, 3.0f);
+    EXPECT_FALSE(flow_movie::tube_floor_check(layer2, look, 1u).reaches_floor);
+    EXPECT_TRUE(flow_movie::tube_floor_check(layer2, look, 2u).reaches_floor);
+    // the level is the lowest of the ladder, and it is >=: 0.9 is below it, 1.0 is at it
+    EXPECT_FALSE(flow_movie::tube_floor_check(column(0, 0.9f), look, 1u).any_tube);
+    EXPECT_TRUE(flow_movie::tube_floor_check(column(0, 1.0f), look, 1u).reaches_floor);
+    // a no-data cell is not a tube
+    FlowVolume hole = column(0, 3.0f);
+    hole.s[at(hole, 4, 0, 4) * spade::kFlowHalvesPerCell + (spade::kFlowQHat % spade::kFlowHalvesPerCell)] = 0x7E00u;
+    EXPECT_FALSE(flow_movie::tube_floor_check(hole, look, 1u).reaches_floor);
+    EXPECT_NEAR(flow_movie::tube_floor_check(hole, look, 1u).lowest_height_m, 1.5f * 0.004f, 1e-6f);
+    // no tube anywhere
+    const auto none = flow_movie::tube_floor_check(blank(8, 10, 8), look, 1u);
+    EXPECT_FALSE(none.any_tube);
+    EXPECT_FALSE(none.reaches_floor);
+}

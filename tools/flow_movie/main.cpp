@@ -2999,8 +2999,8 @@ struct WebFilming {
         if (particles) draws = with_every_frame(draws);  // the points are carried through every frame, 0 to the last draw
         // The still is drawn AFTER the solve (a stage made mid-solve ends the clip's GL context: a GlStage's destructor calls
         // glfwTerminate), so its frame and its mean window stay on disk until then.
-        const std::optional<uint32_t> still_frame =
-            wants_still ? std::optional<uint32_t>(first + still_k) : std::nullopt;
+        std::optional<uint32_t> still_frame;  // assigned, not a ternary of optionals: gcc-13 -O2 reads that as maybe-uninitialized
+        if (wants_still) still_frame = first + still_k;
         const StreamPlan stream_plan(draws, opt.look.mean_frames,
                                      keep_with_still(opt.keep_frames, still_frame, opt.look.mean_frames));
         if (stream_plan.last_frame() >= plan.frames) {

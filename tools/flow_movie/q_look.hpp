@@ -132,6 +132,14 @@ struct QLook {
                        static_cast<double>(pressure_range), level, kept);
 }
 
+// STUB (RED, O183): whether the tubes reach the box's floor; not written yet.
+struct TubeFloorCheck {
+    bool any_tube = false;         // some cell holds q_hat at or above the tubes' lowest level
+    bool reaches_floor = false;    // such a cell is in the floor layer(s): the open face would cut the tube flat
+    float lowest_height_m = 0.0f;  // the lowest such cell's centre above the floor (0 when none)
+};
+[[nodiscard]] inline TubeFloorCheck tube_floor_check(const spade::FlowVolume&, const QLook&, uint32_t) { return {}; }
+
 // "key=value,key=value" over QLook's defaults (--q-look). Keys: l1 l2 l3 (the levels, each in (0, 1], strictly falling), o1 o2 o3
 // (the opacities, each in (0, 1]), vmax (in (0, 1]). Empty: the defaults. An unknown key, a missing '=', key or value, a value that
 // is not a finite number, one out of its range, or levels that do not fall: refused, naming it.
