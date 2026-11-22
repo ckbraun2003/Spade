@@ -262,7 +262,7 @@ inline constexpr float kD1WebSgsCs = 0.17f;
 // (a redraw: --from-cache or --web-still), so not --stream (the later frames do not exist yet) or --simulate-only. Empty when the flag is not asked or is fine, else the refusal's words.
 [[nodiscard]] inline std::string fixed_cloud_range_refusal(bool fixed, bool nasa_cloud, bool stream, bool simulate_only, bool redraw, uint32_t cached_frames, uint32_t needed_frames) {
     if (!fixed) return {};
-    if (!nasa_cloud) return "--fixed-cloud-range sets the cloud's range for the whole clip: it needs --vorticity-cloud";
+    if (!nasa_cloud) return "--fixed-cloud-range sets the cloud's range for the whole clip: it needs --vorticity-cloud (or --pressure-colour, whose tube levels it fixes)";
     if (stream) return "--fixed-cloud-range needs every frame on disk to find the clip's largest vorticity; --stream solves as it draws: use --from-cache or --web-still";
     if (simulate_only) return "--fixed-cloud-range is for drawing; --simulate-only only solves: use one";
     if (!redraw) return "--fixed-cloud-range reads the clip's largest vorticity from frames already on disk: use it with --from-cache or --web-still";

@@ -121,7 +121,7 @@ struct QLook {
     if (mean_frames > 1u) kept += (kept.empty() ? "the field they are cut from is averaged over " : " and averaged over ") + std::format("{} frames centred on the drawn one", mean_frames);
     if (kept.empty()) kept = "no smoothing or averaging is applied";
     const std::string level = look.q_peak > 0.0f
-        ? std::format("The surfaces are at fixed levels, {:g}%, {:g}% and {:g}% of the clip's largest value of the Q-criterion (the balance of spin over strain), the same in every frame, so a tube means the same "
+        ? std::format("The surfaces are at fixed levels, {:g}%, {:g}% and {:g}% of the largest value of the Q-criterion (the balance of spin over strain) in the clip's unsmoothed frames, the same in every frame, so a tube means the same "
                       "thing from one frame to the next.",
                       static_cast<double>(look.level[0]) * 100.0, static_cast<double>(look.level[1]) * 100.0, static_cast<double>(look.level[2]) * 100.0)
         : std::format("The surfaces are at {:g}%, {:g}% and {:g}% of each frame's largest value of the Q-criterion (the balance of spin over strain), so the levels follow each frame.",

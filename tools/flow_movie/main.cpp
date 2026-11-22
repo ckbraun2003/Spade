@@ -1248,7 +1248,8 @@ constexpr float kVortexFloor = -5.0f;
 [[nodiscard]] spade::Result<Film> case_film(LiveCase lc, uint32_t frames, std::string stem, bool gpu = false,
                                             const Look& look = {}, bool particle_views = false,
                                             const std::optional<QLook>& nasa_look = std::nullopt, bool particle_volume = false,
-                                            float parts_cp_range = web::kSurfacePressureCpRange) {
+                                            float parts_cp_range = web::kSurfacePressureCpRange, bool tubes = false,
+                                            std::shared_ptr<spade::FlowVolume> tube_field = nullptr) {
     namespace an = spade::analysis;
     auto prepared = spade::render_parts::prepare_parts(lc.draw_model);
     if (!prepared) return std::unexpected(prepared.error());
@@ -1576,6 +1577,27 @@ constexpr float kVortexFloor = -5.0f;
             film.views.push_back(with_cloud("surface-pressure-vortices", false));
             film.views.push_back(with_cloud("surface-pressure-vortices-shaded", true));
         }
+        // The pressure film with the vortices as smooth surfaces coloured by the air's pressure (O158, O163): the Q ladder as the one flow layer after apply_view, its colour the parts' own cool_warm
+        // map over the still air's pressure +- parts_cp_range disc loadings (`q` Pa each). The tubes are cut from and coloured by `tube_field` (the steadied copy) when the run keeps one, else
+        // from the drawn frame.
+        if (nasa_look && tubes) {
+            const auto with_tubes = [&](const char* name, bool shade) {
+                View v = cp_view(name, web::kSurfacePressureSearchCells, parts_cp_range, shade);
+                v.on_parts = [on = v.on_parts, ql = *nasa_look, q, parts_cp_range, tube_field](const spade::FlowVolume& vol, render::RenderScene& scene) -> spade::Result<std::string> {
+                    auto note = on(vol, scene);
+                    if (!note) return note;
+                    const spade::FlowVolume& field = tube_field != nullptr && !tube_field->v.empty() ? *tube_field : vol;
+                    const auto colour = pressure_transfer(static_cast<float>(inflow_pressure(vol)), q, parts_cp_range);
+                    if (!colour) return std::unexpected(spade::Error{spade::Code::invalid_argument, "the tubes' pressure colour has no scale (no disc loading or no still-air pressure)"});
+                    std::vector<render::IsoSurface> isos = q_isos(field, ql, &*colour);
+                    if (!isos.empty()) scene.flow_layers.push_back(render::FlowLayer{&field, {}, std::move(isos)});
+                    return note;
+                };
+                return v;
+            };
+            film.views.push_back(with_tubes("surface-pressure-tubes", false));
+            film.views.push_back(with_tubes("surface-pressure-tubes-shaded", true));
+        }
     }
     return film;
 }
@@ -1609,6 +1631,8 @@ struct WebPlan {
     std::optional<float> elevation;                   // --elevation DEG: the still's camera elevation in place of the drone's framing
     std::string lines;                                // --lines: the prop part file (under the assets) of the rotors' actuator lines
     bool cloud = false;                               // --vorticity-cloud: the vorticity as a soft cloud in place of the surfaces
+    bool tubes = false;                               // --pressure-colour: the Q tubes coloured by the air's pressure (O158)
+    std::shared_ptr<spade::FlowVolume> tube_field;    // their steadied field, filled by each frame's look (look.hpp's Look::tube_field)
     bool pressure = false;                            // --surface-pressure: S8 draws the air's pressure on the drawn parts, nothing else of the air
     bool shade = false;                               // --surface-shade: ... lit for shape
     std::optional<QLook> nasa;                        // --q-surfaces: S2 and S8 draw Q-criterion surfaces coloured by vorticity
@@ -1720,7 +1744,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                                    plan.drone->model_file, d1_web_hold(plan.cell_mm, plan.drone->hub_above_origin_m));
         if (!lc) return std::unexpected(lc.error());
         auto made = case_film(std::move(*lc), plan.frames, still ? "web-d1-still" : "web-d1", false, plan.look,
-                               plan.particles || plan.particles_preview, plan.nasa, plan.volume, plan.drone->parts_cp_range);
+                               plan.particles || plan.particles_preview, plan.nasa, plan.volume, plan.drone->parts_cp_range, plan.tubes, plan.tube_field);
         if (!made) return std::unexpected(made.error());
         film = std::move(*made);
         film.device = true;
@@ -1801,7 +1825,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                              web::loop_azimuth(web::kD1StillAzimuthDeg, 360.0f, k, n), framing.elevation_deg);
             }, false);
         } else if (id == "S8") {
-            view = with_camera(*view_named(film, web::s8_view_name(plan.pressure, plan.shade, plan.nasa.has_value(), plan.cloud, plan.particles, plan.particles_preview)),
+            view = with_camera(*view_named(film, web::s8_view_name(plan.pressure, plan.shade, plan.nasa.has_value(), plan.cloud, plan.particles, plan.particles_preview, plan.tubes)),
                                [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
                 return orbit(still_aim, web::fit_distance(framing.subject_m, kWebFov, kWebAspect, fit),
                              web::there_and_back_azimuth(web::kD1StillAzimuthDeg, clip.orbit_degrees, k, n),
@@ -1882,6 +1906,31 @@ struct LookState {
         if (auto mean = mean_velocity(volume, std::span<const spade::FlowVolume* const>(frames)); !mean) return mean;
     }
     finish_look(look, volume);
+    if (look.tube_field != nullptr) {
+        // O158: the tubes' own copy of the drawn frame, steadied for display only (the cache and the drawn frame are not written).
+        spade::FlowVolume& tube = *look.tube_field;
+        tube = volume;
+        if (look.tube_mean > 1u) {
+            const MeanWindow w = centred_window(k, look.tube_mean, cached_frames(cache));
+            std::vector<spade::FlowVolume> held;
+            held.reserve(w.count);
+            for (uint32_t i = w.first; i < w.first + w.count; ++i) {
+                if (i == k) {
+                    held.push_back(volume);
+                    continue;
+                }
+                spade::FlowVolume other;
+                FrameLog scratch;
+                if (auto read = read_frame(cache, i, other, scratch); !read) return read;
+                held.push_back(std::move(other));
+            }
+            std::vector<const spade::FlowVolume*> frames;
+            for (const spade::FlowVolume& f : held) frames.push_back(&f);
+            const std::array<uint32_t, 2> channels{spade::kFlowQHat, spade::kFlowPressure};
+            if (auto mean = mean_scalars(tube, std::span<const spade::FlowVolume* const>(frames), channels); !mean) return mean;
+        }
+        if (look.tube_smooth) smooth_s_channel(tube, spade::kFlowQHat);
+    }
     return {};
 }
 
@@ -2017,6 +2066,11 @@ struct Options {
     std::string visual_mesh;         // --visual-mesh FILE: a glTF (metres, the model's frame) drawn at the held body's pose in place of the model's parts; the flow is unchanged
     std::string lines_prop;          // --lines FILE: the rotors of a D1 web clip as actuator lines, the blade from this prop part (under the assets)
     bool nasa_cloud = false;         // --vorticity-cloud: --q-surfaces's colours as a soft vorticity cloud, no surfaces
+    bool pressure_colour = false;    // --pressure-colour: the --q-surfaces tubes coloured by the air's pressure on the parts' scale, in the --surface-pressure film (O158)
+    bool tube_smooth = false;        // --tube-smooth: the tubes' q_hat smoothed over one cell (display only)
+    uint32_t tube_mean = 1;          // --tube-mean N: the tubes' q_hat and pressure averaged over N frames centred on the drawn one (display only; needs the cached frames)
+    float tube_peak = 0.0f;          // the clip's largest q_hat, set by run_web for --fixed-cloud-range with the tubes (0: each frame's own)
+    uint32_t cg_floor = 0;           // --cg-floor N: the solids pressure solve's CG iteration floor, 8 to 16 (0: not given; the run's default)
     bool surface_pressure = false;   // --surface-pressure: S8 shows the air's pressure on the drone's surfaces (O124)
     bool surface_shade = false;      // --surface-shade: ... lit for shape (the colour keeps its hue; needs --surface-pressure)
     std::string cache_dir;           // --cache-dir DIR: a --web-still redraw from the frame in DIR (another run's), never a solve
@@ -2540,6 +2594,13 @@ struct WebFilming {
                 in.vortex_note = vortex_note(*q);
             }
         }
+        if (opt.surface_pressure && opt.pressure_colour) {
+            if (auto q = parse_q_look(opt.q_look)) {
+                q->q_peak = opt.tube_peak;
+                in.tubes = true;
+                in.vortex_note = tube_note(*q, in.drone != nullptr ? in.drone->parts_cp_range : web::kSurfacePressureCpRange, opt.tube_mean, opt.tube_smooth);
+            }
+        }
         in.shaded = opt.surface_shade;
         if (const auto blades_blur = parse_prop_blur(opt.prop_blur)) in.blades = blades_blur->blades;
         in.step_us = opt.step_us.value_or(200u);
@@ -2707,9 +2768,37 @@ struct WebFilming {
         std::fprintf(stderr, "flow_movie: --q-look is for --q-surfaces\n");
         return 2;
     }
+    if (const std::string why = web::pressure_colour_refusal(opt.pressure_colour, clip->id == "S8", opt.surface_pressure, opt.nasa && !opt.nasa_cloud, opt.nasa_cloud); !why.empty()) {
+        std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
+        return 2;
+    }
+    if (opt.pressure_colour) {
+        if (opt.tube_mean > 1u && !(opt.from_cache || opt.web_still_only)) {
+            std::fprintf(stderr, "flow_movie: --tube-mean averages neighbouring cached frames: use --from-cache or --web-still\n");
+            return 2;
+        }
+        plan.tubes = true;
+        opt.look.tube_smooth = opt.tube_smooth;
+        opt.look.tube_mean = opt.tube_mean;
+        opt.look.tube_field = std::make_shared<spade::FlowVolume>();
+        plan.tube_field = opt.look.tube_field;
+    } else if (opt.tube_smooth || opt.tube_mean > 1u) {
+        std::fprintf(stderr, "flow_movie: --tube-smooth and --tube-mean are for --pressure-colour\n");
+        return 2;
+    }
+    if (opt.cg_floor != 0u) {
+        if (const std::string why = web::cg_floor_refusal(opt.cg_floor); !why.empty()) {
+            std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
+            return 2;
+        }
+        if (opt.cg_floor != 8u) {  // 8 is the run's default: only a floor the run cannot take yet is refused
+            std::fprintf(stderr, "flow_movie: --cg-floor %u needs the live run's CG-floor option, which this build does not have yet\n", opt.cg_floor);
+            return 2;
+        }
+    }
     if (opt.surface_pressure) {
         if (const std::string why = web::surface_pressure_refusal(clip->id == "S8", opt.window_to > 0.0, opt.web_still_only || opt.from_cache, opt.stream, opt.particles,
-                                                                  opt.particles_preview, opt.nasa, opt.nasa_cloud);
+                                                                  opt.particles_preview, opt.nasa, opt.nasa_cloud, opt.pressure_colour);
             !why.empty()) {
             std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
             return 2;
@@ -2850,26 +2939,36 @@ struct WebFilming {
         }
     }
     if (opt.fixed_cloud_range) {
-        if (const std::string why = web::fixed_cloud_range_refusal(true, opt.nasa_cloud, opt.stream, opt.simulate_only, opt.web_still_only || opt.from_cache, cached_frames(cache), plan.frames);
+        if (const std::string why = web::fixed_cloud_range_refusal(true, opt.nasa_cloud || opt.pressure_colour, opt.stream, opt.simulate_only, opt.web_still_only || opt.from_cache, cached_frames(cache), plan.frames);
             !why.empty()) {
             std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
             return 2;
         }
-        const auto peak = largest_header_max(cache, plan.frames, spade::kFlowVorticity);
+        const bool tubes_range = opt.pressure_colour;  // the tubes' levels are fractions of the clip's largest q_hat; the cloud's top, of its largest vorticity
+        const auto peak = largest_header_max(cache, plan.frames, tubes_range ? spade::kFlowQHat : spade::kFlowVorticity);
         if (!peak) return fail(peak.error());
         if (!(*peak > 0.0f)) {
-            std::fprintf(stderr, "flow_movie: --fixed-cloud-range: the cache's frames hold no vorticity\n");
+            std::fprintf(stderr, "flow_movie: --fixed-cloud-range: the cache's frames hold no %s\n", tubes_range ? "Q above zero" : "vorticity");
             return 2;
         }
-        opt.cloud_peak = *peak;
-        plan.nasa->vorticity_peak = *peak;  // the cloud (nasa_cloud implies --q-surfaces above)
+        if (tubes_range) {
+            opt.tube_peak = *peak;
+            plan.nasa->q_peak = *peak;
+        } else {
+            opt.cloud_peak = *peak;
+            plan.nasa->vorticity_peak = *peak;  // the cloud (nasa_cloud implies --q-surfaces above)
+        }
         // The film's views captured the look when web_film() built them (above), before the cache was read: build it again with the peak, and set what was set on the first (no particle look
         // here: the cloud and the particle looks are refused together).
         film = web_film(*clip, *group, plan);
         if (!film) return fail(film.error());
         film->role_materials = drone != &web::default_drone();
-        std::printf("flow_movie: web %s: the cloud's range is fixed for the clip: its largest vorticity over the %u frames is %.0f per second\n", opt.web_id.c_str(), plan.frames,
-                    static_cast<double>(*peak));
+        if (tubes_range) {
+            std::printf("flow_movie: web %s: the tubes' levels are fixed for the clip: its largest q_hat over the %u frames is %g\n", opt.web_id.c_str(), plan.frames, static_cast<double>(*peak));
+        } else {
+            std::printf("flow_movie: web %s: the cloud's range is fixed for the clip: its largest vorticity over the %u frames is %.0f per second\n", opt.web_id.c_str(), plan.frames,
+                        static_cast<double>(*peak));
+        }
     }
     if (!opt.web_deliver.empty()) return web_deliver(opt, *clip, n, work, base);
     if (!opt.export_name.empty()) {  // a cached frame's streamlines, not a clip
@@ -3360,6 +3459,24 @@ int main(int argc, char** argv) {
             opt.surface_pressure = true;
         } else if (arg == "--surface-shade") {
             opt.surface_shade = true;
+        } else if (arg == "--pressure-colour") {
+            opt.pressure_colour = true;
+        } else if (arg == "--tube-smooth") {
+            opt.tube_smooth = true;
+        } else if (arg == "--tube-mean") {
+            const std::optional<uint32_t> frames = parse_count(value());
+            if (!frames || *frames == 0u || *frames > 15u) {
+                std::fprintf(stderr, "flow_movie: --tube-mean takes a whole number of frames from 1 to 15, as 3\n");
+                return 2;
+            }
+            opt.tube_mean = *frames;
+        } else if (arg == "--cg-floor") {
+            const std::optional<uint32_t> floor_n = parse_count(value());
+            if (!floor_n) {
+                std::fprintf(stderr, "flow_movie: --cg-floor takes a whole number from 8 to 16, as 12\n");
+                return 2;
+            }
+            opt.cg_floor = *floor_n;
         } else if (arg == "--cache-dir") {
             opt.cache_dir = value();
         } else if (arg == "--q-look") {

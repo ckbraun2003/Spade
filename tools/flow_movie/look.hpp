@@ -21,6 +21,7 @@
 #include <charconv>
 #include <format>
 #include <optional>
+#include <memory>
 #include <span>
 #include <string_view>
 #include <system_error>
@@ -50,6 +51,12 @@ struct Look {
     bool l2_smooth = false;
     uint32_t min_cells = 0;     // 0: no cull
     uint32_t mean_frames = 1;   // 1: the frame alone
+    // O158: the Q tubes' own field (--pressure-colour). A run that draws tubes sets `tube_field` to an empty volume it owns; each frame's look fills it with a COPY of the drawn frame whose q_hat and
+    // pressure are the centred mean of `tube_mean` frames (1: none) and whose q_hat is smoothed over one cell when `tube_smooth`, and the tubes are cut from and coloured by that copy. The
+    // drawn frame itself (the parts' pressure colour) is never touched.
+    bool tube_smooth = false;
+    uint32_t tube_mean = 1;
+    std::shared_ptr<spade::FlowVolume> tube_field;
     WakeFade fade;              // the soft edge of a drawn wake: the drone's framing sets it (not an option)
     CloudThin thin;             // the vorticity thinned near the drone (--q-look): the cloud look's
 
@@ -57,7 +64,7 @@ struct Look {
     [[nodiscard]] bool operator==(const Look&) const noexcept = default;
 
     [[nodiscard]] bool any() const noexcept {
-        return l2_level > 0.0f || l2_smooth || min_cells > 0u || mean_frames > 1u || fade.on() || thin.on();
+        return l2_level > 0.0f || l2_smooth || min_cells > 0u || mean_frames > 1u || fade.on() || thin.on() || tube_field != nullptr;
     }
 };
 
