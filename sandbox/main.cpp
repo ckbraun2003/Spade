@@ -93,6 +93,7 @@ void print_usage() {
     std::puts("  --assets <dir>        the assets/ folder (scenes, worlds, library, fonts): the editor's and the");
     std::puts("                        live smoke's. Default: assets/ beside this program, else ./assets");
     std::puts("  --inject <spec>       live smoke red runs: skip:<step> or anomaly:<step>/<name>");
+    std::puts("  --only <steps>        live smoke: just these steps (main.sub, comma separated) and what they need");
     std::puts("  --horizon-blur <f>    SR-17a atmospheric strength, 0 = off (default 0)");
     std::puts("  --edit <scene.yaml>   FIRST ARGUMENT ONLY: the editor's command line, no window:");
     std::puts("                        [--apply <edits.txt>] [--save <scene.yaml>] [--save-world <world.yaml>]");
@@ -390,6 +391,13 @@ int main(int argc, char** argv) {
             tour.assets_dir = argv[++i];
         } else if (std::strcmp(a, "--label") == 0 && i + 1 < argc) {
             tour.label = argv[++i];
+        } else if (std::strcmp(a, "--only") == 0 && i + 1 < argc) {
+            const spade::Result<std::vector<std::string>> only = spade::sandbox::live::parse_only(argv[++i]);
+            if (!only) {
+                std::fprintf(stderr, "spade_sandbox: %s\n", only.error().context.c_str());
+                return 2;
+            }
+            tour.only = *only;
         } else if (std::strcmp(a, "--inject") == 0 && i + 1 < argc) {
             const spade::Result<spade::sandbox::live::Injection> inj = spade::sandbox::live::parse_inject(argv[++i]);
             if (!inj) {

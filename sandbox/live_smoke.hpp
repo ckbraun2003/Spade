@@ -25,6 +25,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <functional>
+#include <algorithm>
 #include <span>
 #include <string>
 #include <string_view>
@@ -219,15 +220,50 @@ class Smoke {
 // could cancel a real anomaly and turn a FAIL into a PASS; expiry is covered
 // by tests/test_sandbox_live_smoke.cpp.
 // ---------------------------------------------------------------------------
-// --only (a short run of chosen steps, e.g. for a feature film): `a.b,c.d`. STUBS: not implemented yet (RED).
-[[nodiscard]] inline Result<std::vector<std::string>> parse_only(std::string_view /*list*/) {
-    return std::unexpected(Error{Code::invalid_argument, "--only: not implemented"});
+// --only: a short run of chosen steps (a feature film runs one step, not the whole tour). `a.b,c.d`: each a declared step, main.sub.
+[[nodiscard]] inline Result<std::vector<std::string>> parse_only(std::string_view list) {
+    const auto refuse = [&]() -> Result<std::vector<std::string>> {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     "--only takes steps as main.sub, comma separated (editor.x500_feet), not '" + std::string(list) + "'"});
+    };
+    std::vector<std::string> out;
+    std::size_t at = 0;
+    while (at <= list.size()) {
+        const std::size_t comma = list.find(',', at);
+        const std::string_view item = list.substr(at, comma == std::string_view::npos ? std::string_view::npos : comma - at);
+        const std::size_t dot = item.find('.');
+        if (item.empty() || dot == std::string_view::npos || dot == 0 || dot + 1 >= item.size()) return refuse();
+        out.emplace_back(item);
+        if (comma == std::string_view::npos) break;
+        at = comma + 1;
+    }
+    return out;
 }
-[[nodiscard]] inline Result<void> validate_only(std::span<const std::string> /*only*/, std::span<const std::string> /*declared*/) {
-    return std::unexpected(Error{Code::invalid_argument, "--only: not implemented"});
+
+// A step named that the ledger does not declare would run nothing: refused before anything is touched.
+[[nodiscard]] inline Result<void> validate_only(std::span<const std::string> only, std::span<const std::string> declared) {
+    for (const std::string& name : only) {
+        if (std::find(declared.begin(), declared.end(), name) != declared.end()) continue;
+        std::string list;
+        for (const std::string& d : declared) list += (list.empty() ? "" : ", ") + d;
+        return std::unexpected(Error{Code::invalid_argument,
+                                     "--only " + name + " names no declared step (the steps are " + list + ")"});
+    }
+    return {};
 }
-[[nodiscard]] inline std::vector<std::string> steps_to_run(std::span<const std::string> /*only*/, std::span<const std::string> declared) {
-    return std::vector<std::string>(declared.begin(), declared.end());
+
+// The steps a run runs, in ledger order: all of them without --only; with it the chosen ones, and editor.open when any is an editor step (each
+// of those begins by needing the editor open).
+[[nodiscard]] inline std::vector<std::string> steps_to_run(std::span<const std::string> only, std::span<const std::string> declared) {
+    if (only.empty()) return std::vector<std::string>(declared.begin(), declared.end());
+    bool editor = false;
+    for (const std::string& name : only) editor = editor || name.rfind("editor.", 0) == 0;
+    std::vector<std::string> out;
+    for (const std::string& d : declared) {
+        const bool chosen = std::find(only.begin(), only.end(), d) != only.end();
+        if (chosen || (editor && d == "editor.open")) out.push_back(d);
+    }
+    return out;
 }
 
 struct Injection {

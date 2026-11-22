@@ -328,6 +328,9 @@ class Tour {
   public:
     Tour(const TourOptions& options, GlTargetSink& sink, Smoke& smoke, Recorder& recorder)
         : options_(options), sink_(sink), smoke_(smoke), rec_(recorder) {
+        std::vector<std::string> all_steps;
+        for (const StepName& st : kSteps) all_steps.push_back(std::string(st.main) + "." + std::string(st.sub));
+        run_steps_ = steps_to_run(options.only, all_steps);  // --only: the steps this run runs
         for (const Injection& inj : options.injections) {
             if (inj.kind == Injection::Kind::skip) {
                 skip_.push_back(inj.target);
@@ -342,6 +345,9 @@ class Tour {
         if (stopped_) {
             return;
         }
+        if (std::find(run_steps_.begin(), run_steps_.end(), name) == run_steps_.end()) {
+            return;  // --only: not part of this run, and not declared for it either
+        }
         if (std::find(skip_.begin(), skip_.end(), name) != skip_.end()) {
             smoke_.note("skipped by --inject: " + name);
             return;
@@ -349,7 +355,7 @@ class Tour {
         ++index_;
         smoke_.begin(name);
         sink_.set_caption(std::string(main) + "  -  " + std::string(sub) + "    (" + std::to_string(index_) + "/" +
-                          std::to_string(kSteps.size()) + ")");
+                          std::to_string(run_steps_.size()) + ")");
         body();
         if (!stopped_) {
             smoke_.done();
@@ -424,6 +430,7 @@ class Tour {
     Smoke& smoke_;
     Recorder& rec_;
     std::vector<std::string> skip_;
+    std::vector<std::string> run_steps_;
     bool stopped_ = false;
     uint64_t frame_ = 0;
     uint32_t index_ = 0;
@@ -2177,10 +2184,16 @@ void bodies_chapter(Tour& t) {
 }  // namespace
 
 int run_live_smoke(const TourOptions& options) {
-    std::vector<std::string> declared;
+    std::vector<std::string> all_steps;
     for (const StepName& st : kSteps) {
-        declared.push_back(std::string(st.main) + "." + std::string(st.sub));
+        all_steps.push_back(std::string(st.main) + "." + std::string(st.sub));
     }
+    // --only: refused before anything is touched when it names a step the ledger lacks; the run's declared steps are then the chosen ones.
+    if (const Result<void> chosen = validate_only(options.only, all_steps); !chosen) {
+        std::fprintf(stderr, "spade_sandbox: live smoke: %s\n", chosen.error().context.c_str());
+        return 2;
+    }
+    std::vector<std::string> declared = steps_to_run(options.only, all_steps);
     // Before anything is touched: an injection that could not make the run
     // red is refused, so a red run can never pass by mistake.
     if (const Result<void> valid = validate_injections(options.injections, declared, kKnownOpen); !valid) {
