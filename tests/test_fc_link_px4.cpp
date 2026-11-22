@@ -10,8 +10,11 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -78,7 +81,11 @@ public:
     spade::Result<std::vector<uint8_t>> read_some(std::chrono::milliseconds timeout) override {
         if (closed_ && inbox_.empty()) return std::unexpected(spade::Error{spade::Code::io_error, "peer closed"});
         if (inbox_.empty()) {
-            std::this_thread::sleep_for(std::min<std::chrono::milliseconds>(timeout, 2ms));
+            // This fake answers inside write() (no thread), so nothing can arrive while the link waits: sleeping only added the OS timer quantum (a 2 ms
+            // sleep took ~15.6 ms on Windows, so a 300-boot-step test took 5 s alone and timed out at 60 s under load). Yield and let the link's own
+            // deadline end the wait.
+            (void)timeout;
+            std::this_thread::yield();
             return std::vector<uint8_t>{};
         }
         const size_t n = script_.chunk == 0 ? inbox_.size() : std::min(script_.chunk, inbox_.size());
@@ -421,7 +428,9 @@ uint64_t world_digest_after_boot(uint64_t boot_steps_px4_takes, uint64_t* boot_s
     s.mode = Mode::silent_first;
     s.after = boot_steps_px4_takes;
     s.backlog = (boot_steps_px4_takes % 2) == 0;  // both kinds of PX4: one that answers the backlog and one that does not
-    auto link = open_with(s, std::make_shared<Seen>());
+    Px4LinkConfig cfg;
+    cfg.boot_poll = std::chrono::milliseconds(1);  // the boot length is counted in steps, not wall time: 300 steps cost ~0.3 s, not 5 s
+    auto link = open_with(s, std::make_shared<Seen>(), cfg);
     if (!link) return 0;
     double world = 0.0;  // the held spawn state
     uint64_t digest = 1469598103934665603ULL;
@@ -464,4 +473,27 @@ TEST(FcLinkPx4, TheWorldAfterBootIsTheSameWhetherPx4TookThreeStepsOrThreeHundred
     EXPECT_EQ(boot_b, 300u);
     EXPECT_NE(end_a, end_b) << "the link time offset differs: it is recorded, not hidden";
     EXPECT_EQ(a, b) << "same function of PX4's replies from the world's tick 0, whatever PX4's boot length";
+}
+
+// The airframe's data-link default (found in the first real run: PX4 refused to arm with "Preflight Fail: No connection to the GCS"). In PX4 v1.17.0's
+// rcAndDataLinkCheck.cpp a ground station is REQUIRED to arm only when NAV_DLL_ACT is above 0, and PX4's own default is 0 (Disabled). A headless
+// lockstep run has no ground station, so airframe 10090 must not turn the requirement on. Text check on the file the image is built from.
+TEST(FcLinkPx4, TheAirframeDoesNotRequireAGroundStation) {
+    const std::filesystem::path file = std::filesystem::path(SPADE_REPO_DIR) / "tools" / "fc_link" / "px4" / "airframes" / "10090_spade_x500_px4";
+    std::ifstream in(file);
+    ASSERT_TRUE(in.good()) << "cannot read " << file.string();
+    std::string line;
+    int found = 0;
+    long value = -1;
+    while (std::getline(in, line)) {
+        const std::size_t hash = line.find('#');
+        if (hash != std::string::npos) line.erase(hash);  // a comment is not a setting
+        const std::string key = "param set-default NAV_DLL_ACT";
+        const std::size_t at = line.find(key);
+        if (at == std::string::npos) continue;
+        ++found;
+        value = std::strtol(line.c_str() + at + key.size(), nullptr, 10);
+    }
+    EXPECT_EQ(found, 1) << "airframe 10090 sets NAV_DLL_ACT " << found << " times (expected once, explicitly)";
+    EXPECT_EQ(value, 0) << "NAV_DLL_ACT is " << value << ": above 0 makes PX4 require a ground station to arm";
 }

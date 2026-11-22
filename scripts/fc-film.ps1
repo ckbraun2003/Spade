@@ -110,7 +110,7 @@ else {
         Start-Sleep -Milliseconds 800  # the windows exist by now; give them their titles and size
         $psi = New-Object Diagnostics.ProcessStartInfo
         $psi.FileName = $ffmpeg.Source
-        $psi.Arguments = "-y -loglevel warning -f gdigrab -draw_mouse 0 -framerate 15 -i title=`"$titleA`" -f gdigrab -draw_mouse 0 -framerate 15 -i title=`"$titleB`" -filter_complex `"[0:v]scale=-2:720[a];[1:v]scale=-2:720[b];[a][b]hstack,pad=ceil(iw/2)*2:ceil(ih/2)*2`" -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p `"$raw`""
+        $psi.Arguments = "-y -loglevel warning -f gdigrab -draw_mouse 0 -framerate 15 -i title=`"$titleA`" -f gdigrab -draw_mouse 0 -framerate 15 -i title=`"$titleB`" -filter_complex `"[0:v]scale=-2:720[a];[1:v]scale=-2:720[b];[a][b]hstack,pad=ceil(iw/2)*2:ceil(ih/2)*2`" -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -fps_mode cfr -r 15 `"$raw`""
         $psi.RedirectStandardInput = $true
         $psi.UseShellExecute = $false
         $ff = [Diagnostics.Process]::Start($psi)
