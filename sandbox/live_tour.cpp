@@ -2222,6 +2222,7 @@ int run_live_smoke(const TourOptions& options) {
         std::fflush(stdout);
     };
 
+    const std::vector<std::string> run_steps = declared;  // what this run runs, for the end-of-run file checks (declared is moved below)
     Smoke smoke(std::move(declared), kKnownOpen, write);
     smoke.note("label " + (options.label.empty() ? std::string("(none)") : options.label));
     for (const Injection& inj : options.injections) {
@@ -2337,6 +2338,7 @@ int run_live_smoke(const TourOptions& options) {
                           "tour.mp4 " + std::to_string(size) + " bytes, the limit " + std::to_string(kSendableBytes));
     }
     for (std::size_t i = 0; i < kMains.size(); ++i) {
+        if (!poster_expected(run_steps, kMains[i])) continue;  // --only: a chapter this run did not run owes no poster
         const std::string name = poster_name(static_cast<uint32_t>(i) + 1u, kMains[i]);
         std::error_code ec;
         const std::uintmax_t size = fs::file_size(options.out_dir / name, ec);
@@ -2349,6 +2351,10 @@ int run_live_smoke(const TourOptions& options) {
         const std::string name = std::string(snap) + ".png";
         std::error_code ec;
         const std::uintmax_t size = fs::file_size(options.out_dir / name, ec);
+        if (ec && !missing_still_is_anomaly(options.only)) {
+            smoke.note(name + " not written by this run (--only)");
+            continue;
+        }
         (void)smoke.check(!ec && size > 0u, "still-" + std::string(snap),
                           ec ? name + ": " + ec.message() : name + " " + std::to_string(size) + " bytes");
     }

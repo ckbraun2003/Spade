@@ -267,11 +267,16 @@ class Smoke {
 }
 
 // What a run owes at the end, under --only (the first verification run of editor.x500_feet failed the whole-tour file checks for the posters and
-// stills of steps it had not run). STUBS: the whole-tour rule for every run (RED).
+// stills of steps it had not run).
 // A chapter's poster is owed when the run runs a step of that chapter.
-[[nodiscard]] inline bool poster_expected(std::span<const std::string> /*run_steps*/, std::string_view /*main*/) { return true; }
+[[nodiscard]] inline bool poster_expected(std::span<const std::string> run_steps, std::string_view main) {
+    for (const std::string& step : run_steps) {
+        if (step.size() > main.size() && step.compare(0, main.size(), main) == 0 && step[main.size()] == '.') return true;
+    }
+    return false;
+}
 // A still that was not written is a failure in a whole-tour run; under --only it is a note (which step writes which still is not in the ledger).
-[[nodiscard]] inline bool missing_still_is_anomaly(std::span<const std::string> /*only*/) { return true; }
+[[nodiscard]] inline bool missing_still_is_anomaly(std::span<const std::string> only) { return only.empty(); }
 
 struct Injection {
     enum class Kind { skip, anomaly };
