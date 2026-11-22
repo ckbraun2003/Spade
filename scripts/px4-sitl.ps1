@@ -103,8 +103,8 @@ if (-not $OutDir) {
     exit 6
 }
 
-if (-not [System.IO.Path]::IsPathRooted($OutDir)) {  # a label or argument that is not a real absolute folder (a stray {} once became a folder in the worktree) never becomes a path
-    Write-Output "px4-sitl: the run folder '$OutDir' is not an absolute path; nothing was written. The container $name is left running as evidence; remove it with: docker rm -f $name"
+if ($OutDir -notmatch '^([A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)') {  # a FULLY QUALIFIED path only: a drive then :\ or :/, or a UNC \\server\share ([IO.Path]::IsPathRooted also takes \temp and C:foo; PS 5.1 has no IsPathFullyQualified). A label or argument that is not one (a stray {} once became a folder in the worktree) never becomes a path
+    Write-Output "px4-sitl: the run folder '$OutDir' is not a fully qualified path; nothing was written. The container $name is left running as evidence; remove it with: docker rm -f $name"
     Write-Output 'none'
     exit 6
 }
