@@ -13,7 +13,7 @@ The plan makes the engine fit the problem in four moves, in this order, each sho
 3. **Moving solids** (Phase 2): the blade as a cut-cell solid moving through a static fine patch, its wall velocity in the pressure solve (the engine's solid field already carries both the open fractions and a wall velocity, so this extends what exists).
 4. **Validation and the film** (Phases 3 and 4): one resolved rotor against UIUC's measured point, then four rotors.
 
-Total: **about 50 to 60 Physics working days, plus Core 8 to 11 and Rendering about 18 in parallel; about 70 to 100 GPU hours** (§9). **First milestone that shows something real:** the memory diet's deeper O158 wake, at about day 8 of the plan (§9), then **one resolved rotor in a nested patch, validated**, at about day 35.
+Total: **about 45 to 58 Physics working days, plus Core 8 to 11 and Rendering about 18 in parallel; about 55 to 95 GPU hours** (§9). **First milestone that shows something real:** the memory diet's deeper O158 wake, at about day 8 of the plan (§9), then **one resolved rotor in a nested patch, validated**, at about day 35.
 
 ## 1. Memory per cell: where the 221 B go
 
@@ -99,7 +99,7 @@ The prop's mid-span chord is about 12 mm (c/R 0.195, R 63.5 mm), 10.6 mm at 0.75
 
 ## 6. First payoff: the O158 film goes deeper
 
-**Cameron's words (O185): "0.25 m now, deeper later."** Once Phase 0's sparse solid field lands, the same film box can go deeper at no change to the film: at ~85 B a cell the card holds ~88 M cells, which is the FPV box (252 x ny x 284) with **ny up to ~1,230 cells = 1.54 m**, against 437 (+0.25 m) in the first run. The wake front is ~0.8 to 1.3 m below the hub by the last shown step, so the whole wake fits. Time is not free: ~2 s a step at 88 M cells at today's 22.8 ns a cell (5.6 h for 9,400 steps, over the 4 h day), so it also needs the traffic saving of items 2 and 3 above (less memory moved a step: **unmeasured**, to be measured at the end of Phase 0) or a two-day split. **This is the plan's first visible result, at about day 8.**
+**Cameron's words (O185): "0.25 m now, deeper later."** Once Phase 0's sparse solid field lands, the same film box can go deeper at no change to the film: at ~85 B a cell the card holds ~88 M cells, which is the FPV box (252 x ny x 284) with **ny up to ~1,230 cells = 1.54 m**, against 437 (+0.25 m) in the first run. The wake front is ~0.8 to 1.3 m below the hub by the last shown step, so the whole wake fits. Time is not free: ~2 s a step at 88 M cells at today's 22.8 ns a cell (9,400 steps x 2.0 s = 5.2 h, over the 4 h day), so it also needs the traffic saving of items 2 and 3 above (less memory moved a step: **unmeasured**, to be measured at the end of Phase 0) or a two-day split. **This is the plan's first visible result, at about day 8.**
 
 ## 7. Validation (RED first, a stated band)
 
@@ -115,7 +115,7 @@ Holding the fields in host RAM and streaming tiles to the card over PCIe (about 
 
 ## 9. Order, days, GPU hours
 
-**Order against O158 and O159.** O158 (the line film, +0.25 m, floor 12, trimmed) and O159 (the ducted/bare cinewhoop) run on the line model **first**; fix 2 (aperture-aware line), fix 3 (the propeller's speed trend) and fix 1 (the trim) come before either, as ordered. The resolved-blade work runs **alongside in code** and uses the GPU only on its own days after the O158 solve: no change to the O158/O159 schedule.
+**Order against O158 and O159.** O158 (the line film, +0.25 m, floor 12, trimmed) and O159 (the ducted/bare cinewhoop) run on the line model **first**; fix 2 (the aperture-aware line: measured negligible, 2026-11-22, so a guard test instead of a kernel change), fix 3 (the propeller's speed trend) and fix 1 (the trim) come before either, as ordered. The resolved-blade work runs **alongside in code** and uses the GPU only on its own days after the O158 solve: no change to the O158/O159 schedule.
 
 | Phase | Physics days | GPU h | what it shows on screen (Rendering's words) |
 |---|---|---|---|
