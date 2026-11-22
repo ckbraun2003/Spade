@@ -61,9 +61,9 @@ constexpr uint64_t kDt = 500'000;  // 500 us, one substep: the phase 1 default (
 }
 
 // No gravity: a commanded rotor shows as acceleration and nothing else.
-[[nodiscard]] inline spade::Result<WorldSetDesc> still_world() {
+[[nodiscard]] inline spade::Result<WorldSetDesc> still_world(float gravity_y = 0.0f) {
     Environment env;
-    env.gravity = glm::vec3(0.0f);
+    env.gravity = glm::vec3(0.0f, gravity_y, 0.0f);
     env.wind = glm::vec3(0.0f);
     env.air_density = 1.225f;
     Capacities caps;
@@ -93,8 +93,8 @@ struct Rig {
 
 // A quadrotor with an IMU at `imu_divider`, a barometer at `baro_divider`, a magnetometer at `mag_divider`; dt 500 us, one substep.
 [[nodiscard]] inline std::optional<Rig> make_rig(uint32_t imu_divider, uint32_t baro_divider = 40, uint32_t mag_divider = 20, uint64_t dt_ns = kDt,
-                                          uint32_t substeps = 1) {
-    const spade::Result<WorldSetDesc> set = still_world();
+                                          uint32_t substeps = 1, float gravity_y = 0.0f) {
+    const spade::Result<WorldSetDesc> set = still_world(gravity_y);
     if (!set) return std::nullopt;
     spade::Result<Simulation> sim = Simulation::create(*set, dt_ns, substeps, {}, modules_with_baro_mag());
     if (!sim) return std::nullopt;

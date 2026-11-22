@@ -107,6 +107,37 @@ inline constexpr uint32_t kSampleHeaderBytes = 16;
 inline constexpr uint32_t kCommandsHeaderBytes = 24;
 [[nodiscard]] inline constexpr uint32_t tick_record_bytes(uint32_t rotor_count) noexcept { return kTickRecordFixedBytes + 12u * rotor_count; }
 
+// ---------------------------------------------------------------------------
+// THE BOOT PHASE. A flight computer's firmware boots on the simulator's clock and answers nothing until its modules are up, so the link feeds it sensor
+// messages BEFORE tick 0. While it does, the WORLD IS HELD: boot_readings() reads the vehicle at its spawn state, steps nothing and draws from no stream
+// of the world; the small noise a validator needs to see the signal change comes from a SEPARATE stream, a pure function of (BootConfig::seed, boot_step),
+// so a boot of 3 steps and a boot of 300 leave the world, and the trace from tick 0 on, byte for byte the same. Tick 0 is the exchange that returns the
+// firmware's first reply. note_boot() records how long the boot was (boot_steps, boot_end_time_usec) and its seed in trace.bin's header, bytes 160 to 184:
+// 160 u64 boot_steps, 168 u64 boot_end_time_usec, 176 u64 boot seed; all zero when no boot was noted. The sigmas go in the run record.
+// ---------------------------------------------------------------------------
+struct BootConfig {
+    uint64_t seed = 0x5350414445424F4FULL;  // "SPADEBOO"
+    float sigma_accel = 0.02f;              // m/s^2
+    float sigma_gyro = 0.002f;              // rad/s
+    float sigma_pressure_pa = 1.0f;         // Pa
+    float sigma_mag_ut = 0.1f;              // microtesla
+};
+
+// What a boot message is built from, in the BODY frame and Spade's world (+y up); the link converts frames. The sensors the host has no binding for are
+// absent (has_baro, has_mag false).
+struct BootReadings {
+    uint64_t boot_step = 0;
+    glm::vec3 accel_body{0.0f};  // specific force at rest: conjugate(orient) * (-gravity), m/s^2
+    glm::vec3 gyro_body{0.0f};   // zero rotation (plus noise), rad/s
+    bool has_baro = false;
+    float pressure_pa = 0.0f;    // the bound barometer's ISA truth at the held height
+    float temperature_c = 0.0f;
+    bool has_mag = false;
+    glm::vec3 mag_body_ut{0.0f};  // the bound magnetometer's truth at the held pose
+    glm::vec3 position{0.0f};     // the held truth, for a still GNSS fix
+    glm::vec3 velocity{0.0f};
+};
+
 class LockstepHost {
 public:
     // Binds `vehicle` and `sensors` of `sim`. The Simulation must outlive the host. Refusals, each naming what is wrong: a null or stale vehicle ref;
@@ -141,6 +172,10 @@ public:
     // the live run's, byte for byte, when the world and seed are the same. Refuses a file that is short, has another magic or version, another rotor count,
     // a record in the past, or ticks out of order, naming what.
     [[nodiscard]] Result<void> replay_commands(std::span<const std::byte> commands, uint64_t ticks);
+
+    // THE BOOT PHASE (above). Both refuse once the first tick has run (the world is held only before tick 0), and boot_readings touches nothing.
+    [[nodiscard]] Result<BootReadings> boot_readings(uint64_t boot_step, const BootConfig& config = {}) const;
+    [[nodiscard]] Result<void> note_boot(uint64_t boot_steps, uint64_t boot_end_time_usec, const BootConfig& config = {});
 
     // The vehicle's model, for a link that maps outputs to rotors.
     [[nodiscard]] const vehicles::ModelType& model() const noexcept;

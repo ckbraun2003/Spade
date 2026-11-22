@@ -318,6 +318,7 @@ add_executable(spade_tests
     test_flow_movie_build_parts.cpp
     test_fc_host_lockstep.cpp
     test_fc_host_trace.cpp
+    test_fc_host_boot.cpp
     test_fc_link_mavlink.cpp
     test_fc_link_frames.cpp
     test_fc_link_px4.cpp

@@ -473,6 +473,14 @@ Result<void> LockstepHost::replay_commands(std::span<const std::byte> commands, 
     return {};
 }
 
+// RED stubs: the boot API compiles and says it is not built.
+Result<BootReadings> LockstepHost::boot_readings(uint64_t, const BootConfig&) const {
+    return std::unexpected(Error{Code::unavailable, "fc_host: boot_readings is not built yet"});
+}
+Result<void> LockstepHost::note_boot(uint64_t, uint64_t, const BootConfig&) {
+    return std::unexpected(Error{Code::unavailable, "fc_host: note_boot is not built yet"});
+}
+
 const vehicles::ModelType& LockstepHost::model() const noexcept { return *model_; }
 
 }  // namespace spade::fc_host
