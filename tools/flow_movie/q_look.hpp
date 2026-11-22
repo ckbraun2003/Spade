@@ -40,10 +40,15 @@ struct QLook {
     // The vorticity the map's top is a share of, in 1/s: 0 takes each frame's own largest |omega| (the default, and every film before O144's second); above 0 it is the CLIP's largest, read
     // from the cache's headers before drawing (--fixed-cloud-range), so a colour means the same vorticity in every frame and the cloud does not step with the frame's peak.
     float vorticity_peak = 0.0f;
+    // O158: the tubes' levels are fractions of this, the CLIP's largest q_hat (0: each frame's own), so a tube means the same Q in every frame. Set by a run from the cache's headers.
+    float q_peak = 0.0f;
 };
 
+// STUB (RED): the tubes' pressure colour is not written yet.
+[[nodiscard]] inline std::optional<spade::render::TransferFunction> pressure_transfer(float, float, float) { return std::nullopt; }
+
 // The ladder's iso-surfaces, highest level first; none when the frame has no Q above zero or no vorticity to colour by.
-[[nodiscard]] inline std::vector<spade::render::IsoSurface> q_isos(const spade::FlowVolume& v, const QLook& look) {
+[[nodiscard]] inline std::vector<spade::render::IsoSurface> q_isos(const spade::FlowVolume& v, const QLook& look, const spade::render::TransferFunction* = nullptr) {
     const float q_max = v.header.channel_max[spade::kFlowQHat];
     const float vort_max = v.header.channel_max[spade::kFlowVorticity];
     if (!(std::isfinite(q_max) && q_max > 0.0f && std::isfinite(vort_max) && vort_max > 0.0f)) return {};

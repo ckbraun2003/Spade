@@ -147,6 +147,9 @@ inline void smooth_lambda2(spade::FlowVolume& v) {
     refresh_lambda2_range(v);
 }
 
+// STUB (RED, O158): one s-texture channel smoothed like lambda2-hat; not written yet.
+inline void smooth_s_channel(spade::FlowVolume&, uint32_t) {}
+
 // Sets to 0 every 6-connected piece of valid cells with lambda2-hat below -level that holds fewer than `min_cells` cells.
 // Returns the number of pieces removed. 0 cells turns it off. A piece of min_cells or more, and every other cell, is
 // untouched.

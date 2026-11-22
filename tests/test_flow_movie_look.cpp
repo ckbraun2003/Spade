@@ -688,3 +688,118 @@ TEST(FlowMovieQLook, AClipWidePeakFixesTheTopForEveryFrameAndZeroLeavesEachFrame
     ASSERT_TRUE(isos[0].colour_by.has_value());
     EXPECT_NEAR(isos[0].colour_by->range_max, 400.0f * look.vorticity_max, 1e-4f) << "the ladder shares the cloud's range";
 }
+
+// ---- O158 / O163: the Q-surface tubes coloured by the air's pressure, kept stable -----------------------------------------------------------------------------------------------
+// The tubes are the Q ladder with `colour_by` the PRESSURE on the parts' own cool_warm map (the pressure film's colour, so the whole film is one pressure picture), one fixed range for
+// the clip; their levels are fractions of the CLIP's largest q_hat when a run sets q_peak (so a tube means the same Q in every frame and does not pop with the frame's peak); and the q_hat
+// the tubes are cut from can be smoothed on a display-only copy.
+
+TEST(FlowMovieQLook, ThePressureColourIsCoolWarmOverTheStillAirsPressurePlusAndMinusTheRangeInDiscLoadings) {
+    namespace rd = spade::render;
+    const auto tf = flow_movie::pressure_transfer(2.0f, 50.0f, 0.8f);
+    ASSERT_TRUE(tf.has_value());
+    EXPECT_EQ(tf->quantity, rd::FlowQuantity::pressure);
+    EXPECT_EQ(tf->colours, rd::ColourMapId::cool_warm) << "the parts' own map";
+    EXPECT_FALSE(tf->auto_range) << "fixed: the same colour is the same pressure in every frame";
+    EXPECT_NEAR(tf->range_min, 2.0f - 0.8f * 50.0f, 1e-4f) << "the still air's pressure minus the range in disc loadings";
+    EXPECT_NEAR(tf->range_max, 2.0f + 0.8f * 50.0f, 1e-4f);
+    EXPECT_TRUE(rd::validate_transfer_function(*tf).has_value());
+    // the still air's pressure is the map's neutral middle; the ends are its ends
+    spade::FlowVolumeHeader header;
+    const rd::PreparedTransfer prepared = rd::prepare_transfer(*tf, header);
+    const glm::vec3 mid = rd::apply_transfer(prepared, 2.0f).colour;
+    const glm::vec3 neutral = rd::colour_map_at(rd::ColourMapId::cool_warm, 0.5f);
+    EXPECT_NEAR(mid.x, neutral.x, 1e-3f);
+    EXPECT_NEAR(mid.y, neutral.y, 1e-3f);
+    EXPECT_NEAR(mid.z, neutral.z, 1e-3f);
+    const glm::vec3 top = rd::apply_transfer(prepared, 2.0f + 0.8f * 50.0f).colour;
+    const glm::vec3 warm = rd::colour_map_at(rd::ColourMapId::cool_warm, 1.0f);
+    EXPECT_NEAR(top.x, warm.x, 1e-3f);
+    EXPECT_NEAR(top.z, warm.z, 1e-3f);
+    EXPECT_FALSE(flow_movie::pressure_transfer(2.0f, 0.0f, 0.8f).has_value()) << "no disc loading, no scale";
+    EXPECT_FALSE(flow_movie::pressure_transfer(2.0f, 50.0f, 0.0f).has_value());
+    EXPECT_FALSE(flow_movie::pressure_transfer(std::numeric_limits<float>::quiet_NaN(), 50.0f, 0.8f).has_value());
+}
+
+TEST(FlowMovieQLook, TheTubesTakeAPressureColourWhenGivenOneAndNeedNoVorticityThen) {
+    namespace rd = spade::render;
+    const auto tf = flow_movie::pressure_transfer(0.0f, 50.0f, 0.8f);
+    ASSERT_TRUE(tf.has_value());
+    const flow_movie::QLook look;
+    const auto isos = flow_movie::q_isos(volume_with_ranges(10.0f, 0.0f), look, &*tf);
+    ASSERT_EQ(isos.size(), 3u) << "coloured by pressure, a frame with no vorticity still has its tubes";
+    for (std::size_t i = 0; i < 3; ++i) {
+        ASSERT_TRUE(isos[i].colour_by.has_value()) << i;
+        EXPECT_EQ(isos[i].colour_by->quantity, rd::FlowQuantity::pressure) << i;
+        EXPECT_EQ(isos[i].colour_by->colours, rd::ColourMapId::cool_warm) << i;
+        EXPECT_FLOAT_EQ(isos[i].colour_by->range_max, tf->range_max) << i;
+        EXPECT_NEAR(isos[i].value, 10.0f * look.level[i], 1e-5f) << i;
+    }
+    // without one, as before: coloured by vorticity, and none for a frame with none
+    EXPECT_TRUE(flow_movie::q_isos(volume_with_ranges(10.0f, 0.0f), look).empty());
+    EXPECT_EQ(flow_movie::q_isos(volume_with_ranges(10.0f, 200.0f), look)[0].colour_by->quantity, rd::FlowQuantity::vorticity);
+}
+
+TEST(FlowMovieQLook, AClipWideQPeakMakesEveryFramesTubeLevelTheSameAndZeroLeavesEachFramesOwn) {
+    flow_movie::QLook look;
+    EXPECT_FLOAT_EQ(look.q_peak, 0.0f) << "per frame unless a run sets it";
+    const auto own = flow_movie::q_isos(volume_with_ranges(10.0f, 200.0f), look);
+    ASSERT_EQ(own.size(), 3u);
+    EXPECT_NEAR(own[0].value, 10.0f * look.level[0], 1e-5f);
+    look.q_peak = 20.0f;
+    const auto weak = flow_movie::q_isos(volume_with_ranges(10.0f, 200.0f), look);
+    const auto strong = flow_movie::q_isos(volume_with_ranges(15.0f, 200.0f), look);
+    ASSERT_EQ(weak.size(), 3u);
+    ASSERT_EQ(strong.size(), 3u);
+    for (std::size_t i = 0; i < 3; ++i) {
+        EXPECT_NEAR(weak[i].value, 20.0f * look.level[i], 1e-5f) << "the clip's largest q_hat, not the frame's: " << i;
+        EXPECT_FLOAT_EQ(weak[i].value, strong[i].value) << "the same level in a weak frame and a strong one: " << i;
+    }
+    EXPECT_TRUE(flow_movie::q_isos(volume_with_ranges(0.0f, 200.0f), look).empty()) << "a frame with no Q above zero shows no tubes, whatever the clip's peak";
+}
+
+namespace {
+void set_q(FlowVolume& v, uint32_t i, uint32_t j, uint32_t k, float value) {
+    v.s[at(v, i, j, k) * spade::kFlowHalvesPerCell + (spade::kFlowQHat % spade::kFlowHalvesPerCell)] = fp16::from_f32(value).bits;
+}
+[[nodiscard]] float q_at(const FlowVolume& v, uint32_t i, uint32_t j, uint32_t k) {
+    return fp16::to_f32(v.s[at(v, i, j, k) * spade::kFlowHalvesPerCell + (spade::kFlowQHat % spade::kFlowHalvesPerCell)]);
+}
+}  // namespace
+
+// q_hat smoothed over one cell, on a copy (the caller's: the cache's frame is never written): the same Gaussian as lambda2's, normalised over the valid neighbours; the header's range
+// of q_hat follows the work; the other channels are not touched.
+TEST(FlowMovieLook, QHatSmoothsLikeLambda2OnlyInItsOwnChannelAndTheRangeFollows) {
+    FlowVolume v = blank(11, 11, 11);
+    set_q(v, 5, 5, 5, 1000.0f);
+    set_l2(v, 2, 2, 2, -500.0f);
+    const uint16_t l2_before = l2_bits(v, 2, 2, 2);
+    flow_movie::smooth_s_channel(v, spade::kFlowQHat);
+    const std::vector<double> w = kernel();
+    EXPECT_NEAR(q_at(v, 5, 5, 5), 1000.0 * w[3] * w[3] * w[3], 1.5) << "the centre";
+    EXPECT_NEAR(q_at(v, 6, 5, 5), 1000.0 * w[4] * w[3] * w[3], 1.0) << "a face neighbour";
+    double total = 0.0;
+    for (uint32_t k = 0; k < 11; ++k) {
+        for (uint32_t j = 0; j < 11; ++j) {
+            for (uint32_t i = 0; i < 11; ++i) total += q_at(v, i, j, k);
+        }
+    }
+    EXPECT_NEAR(total, 1000.0, 15.0) << "spread, not lost";
+    EXPECT_EQ(l2_bits(v, 2, 2, 2), l2_before) << "lambda2-hat is another channel: untouched";
+    EXPECT_NEAR(v.header.channel_max[spade::kFlowQHat], q_at(v, 5, 5, 5), 1e-3f) << "the range a view reads is the smoothed field's";
+    EXPECT_GE(v.header.channel_min[spade::kFlowQHat], 0.0f);
+
+    // a constant stays constant, and a no-data cell is neither read nor written
+    FlowVolume c = blank(7, 7, 7);
+    for (uint32_t k = 0; k < 7; ++k) {
+        for (uint32_t j = 0; j < 7; ++j) {
+            for (uint32_t i = 0; i < 7; ++i) set_q(c, i, j, k, 3.0f);
+        }
+    }
+    const uint16_t hole = 0x7E00u;  // a NaN: the solver's no-data
+    c.s[at(c, 3, 3, 3) * spade::kFlowHalvesPerCell + (spade::kFlowQHat % spade::kFlowHalvesPerCell)] = hole;
+    flow_movie::smooth_s_channel(c, spade::kFlowQHat);
+    EXPECT_FLOAT_EQ(q_at(c, 2, 3, 3), 3.0f);
+    EXPECT_FLOAT_EQ(q_at(c, 0, 0, 0), 3.0f);
+    EXPECT_EQ(c.s[at(c, 3, 3, 3) * spade::kFlowHalvesPerCell + (spade::kFlowQHat % spade::kFlowHalvesPerCell)], hole);
+}
