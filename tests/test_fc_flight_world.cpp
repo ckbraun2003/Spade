@@ -197,6 +197,51 @@ TEST(FcFlightWorld, EveryPressureTheFlightWorldSendsIsAtTheGroundsAltitudeAndACl
     EXPECT_LT(at_rest.pressure_pa - lifted.pressure_pa, 23.5);
 }
 
+// THE BOOT STREAM AND THE WORLD AGREE (Oversight, 2026-11-23): the first boot message's pressure and the first world tick's pressure differ by noise only, a
+// few sigma of the 1.2 Pa sigma both are drawn with. Core's boot_readings reads the same barometer row as the world (its datum is that row's
+// world_origin_altitude_m), so this passes today: a PIN, not a RED. A boot stream at one datum and a world at another would be a step of hundreds of metres.
+TEST(FcFlightWorld, TheFirstBootMessagesPressureAndTheFirstWorldTicksPressureDifferByNoiseOnly) {
+    std::optional<FlightWorld> w = make_flight_world();
+    ASSERT_TRUE(w.has_value());
+    auto host = spade::fc_host::LockstepHost::open(w->sim, w->vehicle, w->bindings);
+    ASSERT_TRUE(host.has_value()) << host.error().context;
+    ASSERT_TRUE(w->model.model.propulsion.has_value());
+
+    std::vector<double> boot_pa, tick_pa;
+    int exchanges = 0;
+    constexpr int kBootExchanges = 5;
+    spade::fc_link::ExchangeConfig cfg;
+    cfg.chain = &*w->model.model.propulsion;
+    cfg.baro_binding = kBaroBinding;
+    cfg.mag_binding = kMagBinding;
+    cfg.boot = flight_boot_config();
+    auto link = spade::fc_link::AutopilotLink::create(
+        [&](const spade::fc_link::mavlink::HilSensor& m, const std::optional<spade::fc_link::mavlink::HilGps>&) -> spade::Result<spade::fc_link::ActuatorReply> {
+            const bool booting = exchanges < kBootExchanges;
+            (booting ? boot_pa : tick_pa).push_back(static_cast<double>(m.abs_pressure) * 100.0);
+            ++exchanges;
+            spade::fc_link::ActuatorReply r;
+            r.booting = booting;
+            r.lockstep = true;
+            return r;
+        },
+        cfg);
+    ASSERT_TRUE(link.has_value()) << link.error().context;
+    for (int i = 0; i < kBootExchanges + 5; ++i) {
+        const auto step = link->exchange(*host);
+        ASSERT_TRUE(step.has_value()) << "exchange " << i << ": " << step.error().context;
+    }
+    ASSERT_EQ(boot_pa.size(), static_cast<std::size_t>(kBootExchanges));
+    ASSERT_GE(tick_pa.size(), 5u);
+    const double sigma = static_cast<double>(kBaroSigmaPa);
+    // Two independent draws differ with sigma*sqrt(2) = 1.7 Pa; the vehicle rests, so its height is the same to a millimetre (0.01 Pa). Six sigma of one draw.
+    EXPECT_NEAR(boot_pa.front(), tick_pa.front(), 6.0 * sigma) << "Pa: the first boot message against the first world tick";
+    double boot_mean = 0.0, tick_mean = 0.0;
+    for (const double v : boot_pa) boot_mean += v / static_cast<double>(boot_pa.size());
+    for (const double v : tick_pa) tick_mean += v / static_cast<double>(tick_pa.size());
+    EXPECT_NEAR(boot_mean, tick_mean, 4.0 * sigma) << "Pa: the means of five boot messages and five ticks (sigma of a difference of means 0.8 Pa)";
+}
+
 // One source for the kit's sensor figures: the flight world's barometer and magnetometer noise are the kit profile's white sigmas, not numbers of their own.
 TEST(FcFlightWorld, TheBarometerAndMagnetometerNoiseAreTheKitProfilesWhiteSigmas) {
     const auto kit = spade::fc_link::sensor_set(spade::fc_link::SensorProfile::kit, kDtNs, glm::vec3(20.0f, -40.0f, 5.0f), static_cast<float>(kGroundAmslM));
