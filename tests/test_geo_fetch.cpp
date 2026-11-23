@@ -427,6 +427,22 @@ TEST(GeoFetch, ARequestOutOfRangeIsRefusedWithoutAskingAnyone) {
     }
 }
 
+TEST(GeoFetch, AnAnchorWhereTheHeightModelDoesNotHoldIsRefusedByNameBeforeAskingAnyone) {
+    struct Where {
+        const char* what;
+        double lat, lon;
+    };
+    for (const Where& w : {Where{"Honolulu", 21.31, -157.86}, Where{"San Juan", 18.47, -66.11}, Where{"Anchorage", 61.22, -149.90}}) {
+        Rig rig;
+        rig.request.lat_deg = w.lat;
+        rig.request.lon_deg = w.lon;
+        const FetchResult r = rig.run();
+        EXPECT_EQ(r.kind, FetchResultKind::refused) << w.what << ": " << r.message;
+        EXPECT_NE(r.message.find("NAVD88"), std::string::npos) << w.what << ": " << r.message;
+        EXPECT_TRUE(rig.http.urls.empty()) << w.what << ": a refusal before any request";
+    }
+}
+
 TEST(GeoFetch, AnAreaAcrossTheAntimeridianIsRefusedByNameBeforeAskingAnyone) {
     Rig rig;
     rig.env.area = [](double, double, double) { return Bbox{179.99, 52.0, -179.99, 52.01}; };

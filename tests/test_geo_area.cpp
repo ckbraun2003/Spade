@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <limits>
+#include <string>
 
 #include "../tools/geo_fetch/area.hpp"
 #include "core/geodesy.hpp"
@@ -80,6 +82,45 @@ TEST(GeoArea, AnAreaAcrossTheAntimeridianComesBackWithWestNotBelowEast) {
     // fetch_map refuses it by name (test_geo_fetch.cpp); the box itself must not hide the wrap.
     const Bbox b = area_bbox(52.0, 179.9999, 1000.0);
     EXPECT_GE(b.west_deg, b.east_deg);
+}
+
+// The height model guard (O167: a place where the model does not hold is refused by name, not captioned). Fixtures: places on the other
+// datums, and the box's edges.
+TEST(GeoArea, TheHeightModelHoldsInTheConterminousBoxAndThePointsInsideItPass) {
+    EXPECT_EQ(height_model_refusal(40.76, -113.90), "") << "Bonneville";
+    EXPECT_EQ(height_model_refusal(24.1, -100.0), "");
+    EXPECT_EQ(height_model_refusal(57.9, -129.9), "");
+    EXPECT_EQ(height_model_refusal(30.0, -60.1), "");
+}
+
+TEST(GeoArea, APlaceOnAnotherVerticalDatumIsRefusedByNameWithItsReason) {
+    struct Case {
+        const char* what;
+        double lat, lon;
+        const char* word;  // the refusal must say this
+    };
+    const Case cases[] = {
+        {"Honolulu", 21.31, -157.86, "Hawaii"},
+        {"Guam", 13.44, 144.79, "outside"},
+        {"Pago Pago", -14.28, -170.70, "outside"},
+        {"San Juan", 18.47, -66.11, "PRVD02"},
+        {"St Thomas", 18.34, -64.93, "VIVD09"},
+        {"Anchorage", 61.22, -149.90, "outside"},
+    };
+    for (const Case& c : cases) {
+        const std::string why = height_model_refusal(c.lat, c.lon);
+        EXPECT_FALSE(why.empty()) << c.what;
+        EXPECT_NE(why.find(c.word), std::string::npos) << c.what << ": " << why;
+        EXPECT_NE(why.find("NAVD88"), std::string::npos) << c.what << " names the datum the model needs: " << why;
+    }
+}
+
+TEST(GeoArea, JustOutsideEachEdgeOfTheBoxIsRefused) {
+    EXPECT_FALSE(height_model_refusal(23.9, -100.0).empty()) << "south";
+    EXPECT_FALSE(height_model_refusal(58.1, -100.0).empty()) << "north";
+    EXPECT_FALSE(height_model_refusal(40.0, -130.1).empty()) << "west";
+    EXPECT_FALSE(height_model_refusal(40.0, -59.9).empty()) << "east";
+    EXPECT_FALSE(height_model_refusal(std::numeric_limits<double>::quiet_NaN(), -100.0).empty()) << "NaN";
 }
 
 }  // namespace

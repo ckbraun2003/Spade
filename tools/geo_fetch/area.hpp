@@ -15,4 +15,13 @@ namespace spade::geofetch {
 // meridian comes back with west >= east, which fetch_map refuses by name.
 [[nodiscard]] Bbox area_bbox(double lat_deg, double lon_deg, double side_m);
 
+// The height model holds only where USGS 3DEP is NAVD88 and NOAA NGS's GEOID18 is defined: the conterminous United States. The tool turns
+// NAVD88 heights into WGS84 ellipsoid heights by adding the geoid height N, so a place whose elevation is on another datum (Hawaii, the
+// Pacific territories, Alaska: local mean sea level or another vertical datum; Puerto Rico and the US Virgin Islands: PRVD02 and VIVD09,
+// which GEOID18 covers but 3DEP does not give in NAVD88) would get a wrong height by a metre or more, silently. This returns the reason
+// the anchor is refused, by name, or an empty string where the model holds. The box is 24 to 58 N, 130 to 60 W, the conterminous
+// extent NGS lists on its DEFLEC18 page: a PROXY for GEOID18's own grid, whose page the search did not return. It is a box, not a border:
+// a point in Canada, Mexico or the Bahamas inside it passes this check, and 3DEP's no-data answer refuses it after a request.
+[[nodiscard]] std::string height_model_refusal(double lat_deg, double lon_deg);
+
 }  // namespace spade::geofetch

@@ -252,6 +252,15 @@ TEST(GeoCli, UsageProblemsAreExitTwoOnTheErrorStreamWithNothingOnOut) {
     EXPECT_TRUE(rig.http.urls.empty());
 }
 
+TEST(GeoCli, HelpSaysWhereTheHeightModelHolds) {
+    CliRig rig;
+    EXPECT_EQ(rig.run({"--help"}), 0);
+    const std::string text = rig.out.str();
+    EXPECT_NE(text.find("conterminous"), std::string::npos) << "the area the tool covers";
+    EXPECT_NE(text.find("Canada"), std::string::npos) << "the stated limit: a point in Canada or Mexico inside the box passes the check";
+    EXPECT_NE(text.find("Mexico"), std::string::npos);
+}
+
 TEST(GeoCli, HelpIsExitZeroAndListsTheOptions) {
     CliRig rig;
     EXPECT_EQ(rig.run({"--help"}), 0);

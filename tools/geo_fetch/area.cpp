@@ -17,4 +17,6 @@ Bbox area_bbox(double lat_deg, double lon_deg, double side_m) {
     return box;
 }
 
+std::string height_model_refusal(double, double) { return {}; }  // RED: the guard is not written
+
 }  // namespace spade::geofetch
