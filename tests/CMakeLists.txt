@@ -247,6 +247,7 @@ add_executable(spade_tests
     test_fc_live_px4.cpp
     test_fc_flight_world.cpp
     test_fc_live_companion.cpp
+    test_fc_live_flight.cpp
     test_render_target.cpp
     test_render_scene.cpp
     test_render_tessellate.cpp
