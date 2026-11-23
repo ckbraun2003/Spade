@@ -21,6 +21,7 @@
 #include <string_view>
 #include <vector>
 
+#include "../sandbox/editor_drawn_texts.hpp"
 #include "../sandbox/editor_shown_file.hpp"
 #include "../sandbox/live_ledger.hpp"
 #include "../sandbox/live_smoke.hpp"
@@ -725,6 +726,50 @@ TEST(LiveSmokePaths, TheWatchNamesTheStepAndTheFieldOfEveryPathAndNeverTheText) 
     for (const std::string& line : watch.offences()) {
         EXPECT_EQ(line.find("Someone"), std::string::npos) << "an offence never repeats the path: " << line;
     }
+}
+
+// The watch reads each text AS DRAWN (gate 51's smoke flagged 22 anomalies from strings the editor holds but does not draw: the session's internal scene
+// path is full once a scene is saved, and the editor draws only its file name in the title).
+TEST(LiveSmokePaths, TheSessionsInternalPathIsNoOffenceWhileOnlyTheFileNameIsDrawn) {
+    using spade::sandbox::live::PathWatch;
+    spade::sandbox::editor::EditorPanels panels;
+    panels.path = "C:\\Users\\someone\\Desktop\\projects\\spade\\build-smoke\\run\\hover_copy.scene.yaml";  // what Open and Save As use: full once saved
+    panels.title = "hover_copy.scene.yaml";                                                                  // what is drawn
+    panels.selected_source = "C:\\Users\\someone\\Desktop\\models\\gate.glb";                              // the mesh's import source: held, not drawn
+    PathWatch watch;
+    watch.read("editor.save", spade::sandbox::editor::drawn_texts(panels));
+    EXPECT_TRUE(watch.offences().empty()) << (watch.offences().empty() ? "" : watch.offences().front());
+}
+
+TEST(LiveSmokePaths, APathTheEditorDoesDrawIsAnOffenceNamingTheFieldAndNotTheText) {
+    using spade::sandbox::live::PathWatch;
+    spade::sandbox::editor::EditorPanels panels;
+    panels.path = "C:\\Users\\someone\\Desktop\\projects\\spade\\hover_copy.scene.yaml";
+    panels.drawn.scene_file_field = true;  // the File menu is open and shows it
+    panels.selected_source = "C:\\Users\\someone\\Desktop\\models\\gate.glb";
+    panels.drawn.imported_from = true;  // the inspector shows "imported from ..."
+    PathWatch watch;
+    watch.read("editor.objects", spade::sandbox::editor::drawn_texts(panels));
+    ASSERT_EQ(watch.offences().size(), 2u);
+    EXPECT_EQ(watch.offences()[0], "editor.objects: path");
+    EXPECT_EQ(watch.offences()[1], "editor.objects: selected_source");
+    EXPECT_EQ(watch.summary().find("someone"), std::string::npos) << "an offence's line never carries the text";
+}
+
+TEST(LiveSmokePaths, TheEndCheckSaysWhatWasFoundNotThatNothingWas) {
+    using spade::sandbox::live::PathWatch;
+    using spade::sandbox::live::ScreenText;
+    PathWatch clean;
+    clean.read("editor.save", std::vector<ScreenText>{{"title", "hover.scene.yaml"}});
+    EXPECT_NE(clean.summary().find("none naming a path"), std::string::npos) << clean.summary();
+    PathWatch dirty;
+    dirty.read("editor.save", std::vector<ScreenText>{{"path", "C:\\Users\\someone\\x.yaml"}});
+    dirty.read("still editor_save", std::vector<ScreenText>{{"path", "C:\\Users\\someone\\x.yaml"}});
+    const std::string line = dirty.summary();
+    EXPECT_EQ(line.find("none naming"), std::string::npos) << "a failing end check must not say none: " << line;
+    EXPECT_NE(line.find("2 offences"), std::string::npos) << line;
+    EXPECT_NE(line.find("editor.save: path"), std::string::npos) << line;
+    EXPECT_EQ(line.find("someone"), std::string::npos) << line;
 }
 
 TEST(LiveSmokePaths, ACleanScreenLeavesNoOffence) {

@@ -311,6 +311,11 @@ class PathWatch {
     [[nodiscard]] std::size_t reads() const noexcept { return reads_; }
     [[nodiscard]] std::size_t texts_read() const noexcept { return texts_read_; }
     [[nodiscard]] const std::vector<std::string>& offences() const noexcept { return offences_; }
+    // The end check's detail line: what was read and that nothing named a path; when something did, how many offences and which (the step and
+    // the field, never the text).
+    [[nodiscard]] std::string summary() const {
+        return std::to_string(texts_read_) + " texts read over " + std::to_string(reads_) + " step ends and stills, none naming a path on this machine";  // RED: says none even when there are offences
+    }
 
   private:
     std::size_t reads_ = 0;
