@@ -1943,6 +1943,9 @@ private:
         uint32_t declared_body_capacity = 0;     // the world's OWN capacity, enforced at spawn
         uint32_t declared_element_capacity = 0;  // ditto, for force elements
         uint32_t declared_sensor_capacity = 0;   // ditto, for sensors
+        uint32_t declared_camera_capacity = 0;   // ditto, for cameras (Capacities::cameras)
+        uint32_t declared_camera_pixels = 0;     // ditto: the pixels all the cameras together may render (Capacities::camera_pixels)
+        uint32_t declared_keypoint_groups = 0;   // ditto: whether a camera may carry the keypoint channel (Capacities::keypoint_groups)
         // The regions placed in this world (stage 7 D2), resolved against the schedule's: `region` indexes
         // CompiledSchedule::regions. Empty for every world today.
         struct PlacedRegion {
@@ -2219,6 +2222,9 @@ private:
     // The one budget spawn() and every per_element attach_row() check against
     // Capacities::force_elements -- see spawn()'s doc comment.
     [[nodiscard]] Result<uint32_t> live_force_elements(uint32_t world_index) const;
+    // The camera's own capacities, checked by attach_row_impl before a slot is reserved: the count, the sum of the pixels, the keypoint channel.
+    // Rows still queued (not yet at the boundary) count, so a burst of attaches inside one step cannot pass what a flushed world would refuse.
+    [[nodiscard]] Result<void> admit_camera(uint32_t world_index, std::span<const std::byte> spawn, const std::string& prefix) const;
 
     ArenaSet arenas_;
     WorldSetLayout layout_{};
