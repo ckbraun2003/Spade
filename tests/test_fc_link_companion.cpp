@@ -60,4 +60,9 @@ TEST(FcLinkCompanion, TheHeartbeatIsAGroundStationOfNoAutopilotAndActive) {
     EXPECT_EQ(h.mavlink_version, 3);
 }
 
+TEST(FcLinkCompanion, TheCompanionsSourceIdsAreOneNamedPairPx4AddressesItsAcksTo) {
+    EXPECT_EQ(fcl::kCompanionSystemId, 1) << "PX4's own system id";
+    EXPECT_EQ(fcl::kCompanionComponentId, 191) << "MAV_COMP_ID_ONBOARD_COMPUTER";
+}
+
 }  // namespace
