@@ -191,6 +191,30 @@ TEST(FcLinkPx4, OpeningARefusedByASilentPx4NamesIt) {
     EXPECT_NE(link.error().context.find("px4_no_heartbeat"), std::string::npos) << link.error().context;
 }
 
+// After a stall the report must say which way the last message went: the time_usec of the last reply accepted against the last sensor message sent, and the
+// longest a write took (a host that paused inside send shows there).
+TEST(FcLinkPx4, TheReportNamesTheLastReplyAcceptedAndTheLongestSend) {
+    auto seen = std::make_shared<Seen>();
+    Script script;
+    script.write_delay = std::chrono::milliseconds(20);
+    auto link = open_with(script, seen);
+    ASSERT_TRUE(link.has_value());
+    for (uint64_t k = 1; k <= 3; ++k) {
+        ASSERT_TRUE(link->exchange(sensor_at(k), std::nullopt).has_value());
+        std::this_thread::sleep_for(std::chrono::milliseconds(15));  // the host's own work between two exchanges
+    }
+    const Px4LinkReport& rep = link->report();
+    EXPECT_EQ(rep.last_time_usec, 3 * kStepUs);
+    EXPECT_EQ(rep.last_reply_time_usec, 3 * kStepUs) << "the third reply accepted answers the third message";
+    EXPECT_GE(rep.wall_send_max, std::chrono::milliseconds(20)) << "the fake's write sleeps 20 ms";
+    EXPECT_LT(rep.wall_send_max, std::chrono::seconds(5));
+    EXPECT_GE(rep.wall_wait_last, std::chrono::milliseconds(20)) << "the last exchange's wait includes the fake's 20 ms write";
+    EXPECT_GE(rep.wall_gap_last, std::chrono::milliseconds(15)) << "the host gap before the third exchange: the 15 ms the host spent after the second reply";
+    EXPECT_GE(rep.wall_gap_max, rep.wall_gap_last);
+    EXPECT_GE(rep.wall_gap_total, std::chrono::milliseconds(30)) << "two gaps (before the 2nd and 3rd exchange); the first has none";
+    EXPECT_LT(rep.wall_gap_total, std::chrono::seconds(5));
+}
+
 TEST(FcLinkPx4, TenThousandLockstepStepsHaveNoGap) {
     auto seen = std::make_shared<Seen>();
     auto link = open_with({}, seen);

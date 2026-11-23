@@ -75,6 +75,12 @@ struct Px4LinkReport {
     uint64_t catchup_replies = 0;     // replies to boot-time sensor messages that arrived with the first one
     std::chrono::nanoseconds wall_wait_total{0};  // wall time spent waiting for replies
     std::chrono::nanoseconds wall_wait_max{0};
+    uint64_t last_reply_time_usec = 0;            // time_usec of the last HIL_ACTUATOR_CONTROLS accepted: after a stall, equal to last_time_usec means PX4 answered the last message
+    std::chrono::nanoseconds wall_send_max{0};    // the longest wall time one exchange spent in the writes of its sensor (and GPS) message
+    std::chrono::nanoseconds wall_wait_last{0};   // the WAIT of the last exchange: from before its send to its reply accepted (a long one: the path or PX4)
+    std::chrono::nanoseconds wall_gap_last{0};    // the HOST GAP before the last exchange: from the previous reply accepted to this send (a long one: the host)
+    std::chrono::nanoseconds wall_gap_max{0};
+    std::chrono::nanoseconds wall_gap_total{0};
     mavlink::Parser::Stats parser{};
 };
 
