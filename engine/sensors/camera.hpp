@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -188,6 +189,47 @@ static_assert(offsetof(CameraStamp, k4) == 72);
 static_assert(offsetof(CameraStamp, _p0) == 76);
 static_assert(offsetof(CameraStamp, orientation) == 80);
 
+// What a caller states about a camera (the attach_row record of the array "camera_sensors"; 104 bytes, at most kMaxSpawnBytes). The defaults are the row's
+// own for the fields the design gives one (no blur, no antialiasing, unit gain, every cull bit, the image channel); the lens, the size and the rate are the
+// caller's to state, and a spawn that does not (width 0, fx 0) is refused naming the field.
+struct CameraSensorSpawn {
+    glm::vec3 mount_pos{0.0f};                       // BODY-frame offset from the COM, m
+    glm::quat mount_orient{1.0f, 0.0f, 0.0f, 0.0f};  // mount -> body, unit
+    uint32_t rate_divider = 1;                       // one frame every N substeps
+    float shutter_fraction = 0.0f;                   // exposure as a fraction of the camera period, [0, 1]
+    uint32_t lens_kind = lens_kind::pinhole;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t mode = camera_mode::colour;
+    float fx = 0.0f;
+    float fy = 0.0f;
+    float cx = 0.0f;
+    float cy = 0.0f;
+    float k1 = 0.0f;
+    float k2 = 0.0f;
+    float k3 = 0.0f;
+    float k4 = 0.0f;
+    uint32_t blur_samples = 1;
+    uint32_t aa_samples = 1;
+    float exposure_gain = 1.0f;
+    uint32_t cull_mask = 0xFFu;
+    uint32_t channels = camera_channel::image;
+};
+static_assert(std::is_trivially_copyable_v<CameraSensorSpawn>);
+static_assert(sizeof(CameraSensorSpawn) == 104);
+
+// One frame DUE: the camera's period elapsed in this tick, so a frame is to be rendered from the state at the end of tick `tick`. 16 bytes, no pixels (the
+// pixels are Rendering's); `index` counts the camera's frames from 1, so a gap a reader sees through ring_poll is a frame that was dropped.
+struct alignas(kStd430StructAlignment) CameraFrameDue {
+    SampleIndex index;  // monotonically increasing, per camera, starts at 1
+    uint64_t tick;      // the step this frame is due in: the capture tick
+};
+static_assert(std::is_standard_layout_v<CameraFrameDue>);
+static_assert(std::is_trivially_copyable_v<CameraFrameDue>);
+static_assert(alignof(CameraFrameDue) == 16 && sizeof(CameraFrameDue) == 16);
+static_assert(offsetof(CameraFrameDue, index) == 0);
+static_assert(offsetof(CameraFrameDue, tick) == 8);
+
 // The camera's own noise stream, derived by its WORLD-LOCAL slot (not its global arena slot: batching invariance, as the IMU's and the GNSS's).
 [[nodiscard]] constexpr rng::Stream camera_noise_stream(uint64_t world_seed, uint32_t local_slot) noexcept {
     return rng::make_stream(world_seed, kCameraNoiseDomainTag, local_slot);
@@ -200,5 +242,9 @@ static_assert(offsetof(CameraStamp, orientation) == 80);
 // Why a row is not a valid camera, or the empty string: the first rule it breaks, naming the field. A zero row (kind none) is valid: it is inert.
 [[nodiscard]] std::string camera_row_issue(const CameraSensorRow& row, uint32_t keypoint_groups);
 // `keypoint_groups` is the world's Capacities::keypoint_groups: the one rule that needs the world (keypoints with none declared writes nothing).
+
+// The camera.schedule pass's work for ONE world's spans (the pass in sim/ calls it): every live camera row on an active body advances its divider and phase
+// by one substep and, when a frame falls due, writes a CameraFrameDue into its ring. `rings` holds cameras.size() * kRingDepth frames.
+void schedule_cameras(std::span<const BodyState> bodies, std::span<CameraSensorRow> cameras, std::span<CameraFrameDue> rings, uint64_t tick) noexcept;
 
 }  // namespace spade::sensors
