@@ -14,6 +14,9 @@ namespace spade::fc_host {
 
 namespace {
 
+// The six files of a run folder, and the only names the writer will open. A key or a signature is not among them: Spade does not sign.
+constexpr std::string_view kRunFiles[] = {"run.yaml", "trace.bin", "commands.bin", "meters.yaml", "profile.board.yaml", "manifest.yaml"};
+
 [[nodiscard]] Error invalid(std::string what) { return Error{Code::invalid_argument, "fc_host: build_run_record: " + std::move(what)}; }
 
 [[nodiscard]] std::string_view as_text(const std::vector<std::byte>& bytes) { return std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()); }
@@ -209,8 +212,8 @@ Result<void> write_run_folder(const RunRecord& record, const std::filesystem::pa
     const auto fail = [](Code code, std::string what) { return std::unexpected(Error{code, "fc_host: write_run_folder: " + std::move(what)}); };
     for (const auto& [name, bytes] : record.files) {
         (void)bytes;
-        if (name.empty() || name.find_first_of("/\\") != std::string::npos || name == "." || name == "..") {
-            return fail(Code::invalid_argument, "a file name must be a plain name in the folder (got '" + name + "')");
+        if (std::find(std::begin(kRunFiles), std::end(kRunFiles), std::string_view(name)) == std::end(kRunFiles)) {
+            return fail(Code::invalid_argument, "'" + name + "' is not one of the run folder's six files (run.yaml, trace.bin, commands.bin, meters.yaml, profile.board.yaml, manifest.yaml)");
         }
     }
     std::error_code ec;

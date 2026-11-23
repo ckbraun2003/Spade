@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -231,13 +232,64 @@ TEST(FcHostRunRecord, ARecordThatCannotBeWrittenTruthfullyIsRefusedNamingTheFiel
     refused(good_identity(), with_meters([](RunMeters& m) { m.stages[0].name = "a.b"; }), "stage name");
     refused(good_identity(), with_meters([](RunMeters& m) { m.memory_peak_bytes.reset(); }), "memory_peak_bytes");
 
-    // a user's folder in a value is refused, naming the field and never quoting the path
-    RunIdentity leaky = good_identity();
-    leaky.link_version = "C:\\Users\\someone\\px4";
-    const spade::Result<RunRecord> r = spade::fc_host::build_run_record(*host, leaky, good_meters());
-    ASSERT_FALSE(r.has_value());
-    EXPECT_NE(r.error().context.find("link_version"), std::string::npos) << r.error().context;
-    EXPECT_EQ(r.error().context.find("someone"), std::string::npos) << "the path is never quoted back";
+    // a user's folder in ANY string value the record writes is refused, naming the field and never quoting the path: a table over every one of them
+    struct Field {
+        const char* name;
+        std::string RunIdentity::*member;
+    };
+    const Field fields[] = {{"run_id", &RunIdentity::run_id},
+                            {"box", &RunIdentity::box},
+                            {"tree", &RunIdentity::tree},
+                            {"spade_build_id", &RunIdentity::spade_build_id},
+                            {"spade_commit", &RunIdentity::spade_commit},
+                            {"engine_config_hash", &RunIdentity::engine_config_hash},
+                            {"world_file_hash", &RunIdentity::world_file_hash},
+                            {"model_hash", &RunIdentity::model_hash},
+                            {"link_kind", &RunIdentity::link_kind},
+                            {"link_version", &RunIdentity::link_version},
+                            {"software_identity", &RunIdentity::software_identity},
+                            {"package_hash", &RunIdentity::package_hash},
+                            {"profile_board_yaml", &RunIdentity::profile_board_yaml}};
+    for (const Field& field : fields) {
+        for (const char* leak : {"C:\\Users\\someone\\px4", "/home/someone/px4", "see /Users/someone/x"}) {
+            RunIdentity leaky = good_identity();
+            leaky.*(field.member) = leak;
+            const spade::Result<RunRecord> r = spade::fc_host::build_run_record(*host, leaky, good_meters());
+            ASSERT_FALSE(r.has_value()) << field.name << " with " << leak;
+            EXPECT_NE(r.error().context.find(field.name), std::string::npos) << field.name << ": " << r.error().context;
+            EXPECT_EQ(r.error().context.find("someone"), std::string::npos) << field.name << ": the path is never quoted back";
+        }
+    }
+}
+
+TEST(FcHostRunRecord, TheRecordIsExactlyTheSixNamedFilesAndNoKeyIsReadOrWritten) {
+    std::optional<Rig> rig;
+    spade::Result<LockstepHost> host = std::unexpected(spade::Error{spade::Code::internal, "unset"});
+    ASSERT_TRUE(run_host(rig, host, true));
+    const spade::Result<RunRecord> record = spade::fc_host::build_run_record(*host, good_identity(), good_meters());
+    ASSERT_OK(record);
+    std::vector<std::string> names;
+    for (const auto& [name, bytes] : record->files) names.push_back(name);
+    const std::vector<std::string> six = {"commands.bin", "manifest.yaml", "meters.yaml", "profile.board.yaml", "run.yaml", "trace.bin"};
+    EXPECT_EQ(names, six) << "the record holds these six and nothing else: Spade does not sign, so there is no key file and no signature file";
+
+    // the folder it writes holds exactly them
+    const spade::test::TempDir dir("fc_host_six_files");
+    ASSERT_OK(spade::fc_host::write_run_folder(*record, dir.path() / "run"));
+    std::vector<std::string> on_disk;
+    for (const auto& entry : std::filesystem::directory_iterator(dir.path() / "run")) on_disk.push_back(entry.path().filename().string());
+    std::sort(on_disk.begin(), on_disk.end());
+    EXPECT_EQ(on_disk, six);
+
+    // the writer refuses a seventh file, so nothing but the six can be opened through it, and nothing is created when it refuses
+    RunRecord extra = *record;
+    extra.files["signing.key"] = {std::byte{1}};
+    const std::filesystem::path other = dir.path() / "other";
+    const spade::Result<void> refused = spade::fc_host::write_run_folder(extra, other);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(refused.error().context.find("signing.key"), std::string::npos) << refused.error().context;
+    EXPECT_FALSE(std::filesystem::exists(other)) << "a refused record creates no folder";
 }
 
 TEST(FcHostRunRecord, WritingTheFolderLeavesTheSameBytesAndNeverOverwritesARecord) {
