@@ -30,6 +30,7 @@
 #include <variant>
 #include <vector>
 
+#include "fc_flight_record.hpp"
 #include "fc_flight_report.hpp"
 #include "fc_flight_world.hpp"
 #include "fc_link/autopilot_link.hpp"
@@ -159,6 +160,7 @@ TEST(FcLiveFlight, Px4FliesTheX500ThroughArmTakeoffHoverAndLand) {
     const auto wall_since = [&] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - wall0).count(); };
     FlightRunFacts facts;  // the report: first datagram, the wait and the host gap of every exchange
     uint64_t seen_exchanges = 0;
+    std::vector<double> wait_samples_ns, gap_samples_ns;  // per exchange, for the run record's stages
 
     for (uint64_t guard = 0; guard < 100000000ull; ++guard) {
         const auto res = alink->exchange(*host);
@@ -169,6 +171,8 @@ TEST(FcLiveFlight, Px4FliesTheX500ThroughArmTakeoffHoverAndLand) {
             const double sim_now = static_cast<double>(host->sim_time_ns()) * 1e-9;
             const double wall_now = wall_since();
             ++facts.exchanges;
+            wait_samples_ns.push_back(static_cast<double>(rep.wall_wait_last.count()));
+            gap_samples_ns.push_back(static_cast<double>(rep.wall_gap_last.count()));
             facts.wait_total_ms += wait_ms;
             facts.gap_total_ms += gap_ms;
             if (wait_ms > facts.wait_max_ms) { facts.wait_max_ms = wait_ms; facts.wait_max_at_sim_s = sim_now; facts.wait_max_at_wall_s = wall_now; }
@@ -255,6 +259,25 @@ TEST(FcLiveFlight, Px4FliesTheX500ThroughArmTakeoffHoverAndLand) {
     const std::string text = format_flight_report(facts);
     std::ofstream(out / "flight-report.txt") << text;
     std::cout << text;
+
+    // The run record (tests/fc_flight_record.hpp): the image id arrives from the wrapper (SPADE_FC_IMAGE_ID, from `docker image inspect --format {{.Id}}`);
+    // without it the record is REFUSED, not filled in, and the test fails saying so.
+    fc_flight_test::FlightRecordInputs record_in;
+    record_in.run_id = run;
+    record_in.package_hash = env_or_empty("SPADE_FC_IMAGE_ID");
+    record_in.link_version = "v1.17.0";
+    record_in.dockerfile = std::filesystem::path(SPADE_REPO_DIR) / "tools/fc_link/px4/Dockerfile";
+    record_in.model_file = std::filesystem::path(SPADE_REPO_DIR) / "tools/flow_movie/data/x500/x500.model.yaml";
+    record_in.world_file = std::filesystem::path(SPADE_REPO_DIR) / "tests/fc_flight_world.hpp";
+    record_in.profile_board_yaml = "board: px4_sitl_airframe_10090\nlink: docker_desktop_forward\nlockstep: hil_sensor_4ms\n";
+    record_in.wait_ns = wait_samples_ns;
+    record_in.gap_ns = gap_samples_ns;
+    const auto record = fc_flight_test::build_flight_record(*host, world->sim, record_in);
+    EXPECT_TRUE(record.has_value()) << "the run record is refused: " << (record ? "" : record.error().context);
+    if (record) {
+        const auto written = spade::fc_host::write_run_folder(*record, out / "run-record");
+        EXPECT_TRUE(written.has_value()) << (written ? "" : written.error().context);
+    }
 
     EXPECT_EQ(no_reply + stale_reply + link_closed + other_refusal, 0u) << first_refusal;
     EXPECT_EQ(send_failures, 0u);
