@@ -44,6 +44,17 @@ struct FakePlant {
     }
 };
 
+// "Decays, never grows": the peak of |share - 1| over the run's last quarter against the deviation of its first window. Below 1 the run has come in
+// from where it started; above 1 it is ringing up. (The claim itself, not a tolerance on it: the unsettled rows at the chosen gain measure 0.19 to 0.61.)
+double late_over_first(const ft::Result& r) {
+    const std::size_t n = r.windows.size();
+    double late = 0.0;
+    for (std::size_t i = n - n / 4; i < n; ++i) {
+        late = std::fmax(late, std::fabs(r.windows[i].share - 1.0));
+    }
+    return late / std::fabs(r.windows.front().share - 1.0);
+}
+
 }  // namespace
 
 TEST(FpvTrim, TheDefaultsAreWhatTheTableChose) {
@@ -170,13 +181,7 @@ TEST(FpvTrim, ThePlantTableEverySettledRowIsInsideItsBoundAndEveryOtherRowDecays
                 EXPECT_TRUE(std::isnan(r.omega)) << label << ": an unsettled speed is never reported";
                 EXPECT_LE(r.steps, cfg.cap_steps) << label;
                 EXPECT_GT(r.steps, cfg.cap_steps - cfg.window_steps) << label << ": it ran to the last whole window";
-                // decaying, not growing: the last quarter's peak of |share - 1| is under 0.7 of the first window's deviation (measured 0.19 to 0.61, the slowest being lag 2,000 with 2,000 steps of delay from 0.93)
-                const std::size_t n = r.windows.size();
-                double late = 0.0;
-                for (std::size_t i = n - n / 4; i < n; ++i) {
-                    late = std::fmax(late, std::fabs(r.windows[i].share - 1.0));
-                }
-                EXPECT_LT(late, 0.7 * std::fabs(r.windows.front().share - 1.0)) << label;
+                EXPECT_LT(late_over_first(r), 1.0) << label << ": an unsettled run must be coming in, not ringing up (measured 0.19 to 0.61)";
             }
         }
     }
@@ -216,4 +221,29 @@ TEST(FpvTrim, AGainAboveWhatTheTableChoseRingsAndStopsSettlingOnTheSameDeadTimeR
     EXPECT_LT(crossings_025, crossings_040);
     EXPECT_EQ(outcome_025_1000, ft::Outcome::settled);
     EXPECT_EQ(outcome_040_1000, ft::Outcome::unsettled);
+}
+
+TEST(FpvTrim, TheDecayCheckFailsAPlantARunRingsUpOn) {
+    // the check is not satisfied by anything: a gain of 0.4 and 0.6 on the long-delay rows grows (measured late / first: 0.4 on lag 430 with 2,000 steps of
+    // delay: 3.33 and 1.57 from the two starts; on lag 2,000 with 2,000 steps: 1.94 and 2.45; 0.6 on lag 430 with 2,000 steps: 32.6 and 3.9), and the
+    // chosen gain on the same plants does not (0.42 to 0.61)
+    for (const double gain : {0.4, 0.6}) {
+        for (const double lag : {430.0, 2000.0}) {
+            for (const double start : {0.93, 1.09}) {
+                ft::Config cfg;
+                cfg.gain = gain;
+                FakePlant plant(lag, 2000, start, cfg.window_steps);
+                const ft::Result r = ft::run(plant, start, cfg);
+                ASSERT_EQ(r.outcome, ft::Outcome::unsettled);
+                EXPECT_GT(late_over_first(r), 1.0) << "gain " << gain << " lag " << lag << " start " << start << ": must fail the decay check";
+            }
+        }
+    }
+    for (const double lag : {430.0, 2000.0}) {
+        for (const double start : {0.93, 1.09}) {
+            const ft::Config cfg;
+            FakePlant plant(lag, 2000, start, cfg.window_steps);
+            EXPECT_LT(late_over_first(ft::run(plant, start, cfg)), 1.0) << "the chosen gain, lag " << lag << " start " << start;
+        }
+    }
 }
