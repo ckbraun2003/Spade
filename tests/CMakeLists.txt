@@ -246,6 +246,11 @@ add_executable(spade_tests
     test_fc_run_folder.cpp
     test_fc_live_harness.cpp
     test_fc_live_px4.cpp
+    test_fc_flight_world.cpp
+    test_fc_flight_report.cpp
+    test_fc_flight_record.cpp
+    test_fc_live_companion.cpp
+    test_fc_live_flight.cpp
     test_render_target.cpp
     test_render_scene.cpp
     test_render_tessellate.cpp
@@ -330,7 +335,11 @@ add_executable(spade_tests
     test_fc_link_frames.cpp
     test_fc_link_px4.cpp
     test_fc_link_exchange.cpp
+    test_fc_link_run_support.cpp
+    test_fc_link_companion.cpp
     test_fc_link_tcp.cpp
+    test_fc_link_udp.cpp
+    test_fc_link_flight.cpp
     test_autopilot_map.cpp
     test_x500_contact_model.cpp
     test_sensor_profiles.cpp

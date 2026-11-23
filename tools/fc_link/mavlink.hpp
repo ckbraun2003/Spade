@@ -40,6 +40,7 @@ inline constexpr size_t kMaxFrame = kHeaderLen + kMaxPayload + kChecksumLen + kS
 enum class MsgId : uint32_t {
     heartbeat = 0,
     command_long = 76,
+    command_ack = 77,
     hil_actuator_controls = 93,
     hil_sensor = 107,
     hil_gps = 113,
@@ -79,6 +80,26 @@ struct CommandLong {
     uint8_t confirmation = 0;
     friend bool operator==(const CommandLong&, const CommandLong&) = default;
 };
+
+// What the autopilot answers to a command (MAV_RESULT: 0 accepted, 1 temporarily rejected, 2 denied, 3 unsupported, 4 failed, 5 in progress);
+// target_system/target_component are the command's sender, progress and result_param2 the extension fields (progress 255 = unknown).
+struct CommandAck {
+    uint16_t command = 0;
+    uint8_t result = 0;
+    uint8_t progress = 0;
+    int32_t result_param2 = 0;
+    uint8_t target_system = 0;
+    uint8_t target_component = 0;
+    friend bool operator==(const CommandAck&, const CommandAck&) = default;
+};
+
+// The flight commands the video #3 script sends (docs/design/interface/plans/2026-11-21-fc-links.md section 13), as COMMAND_LONG to the
+// autopilot's own system and component (1, 1 by default). arm: MAV_CMD_COMPONENT_ARM_DISARM (400), param1 1 / 0. takeoff: MAV_CMD_NAV_TAKEOFF
+// (22): yaw and position NaN (unchanged, here), the altitude in param7 ABOVE MEAN SEA LEVEL (PX4 reads it as an absolute altitude). land:
+// MAV_CMD_NAV_LAND (21): yaw and position NaN (here). The bytes are pinned to pymavlink's (tests/test_fc_link_mavlink.cpp).
+[[nodiscard]] CommandLong command_arm(bool arm, uint8_t target_system = 1, uint8_t target_component = 1);
+[[nodiscard]] CommandLong command_takeoff(float altitude_amsl_m, uint8_t target_system = 1, uint8_t target_component = 1);
+[[nodiscard]] CommandLong command_land(uint8_t target_system = 1, uint8_t target_component = 1);
 
 // IMU in SI units, FRD body; mag in gauss; pressure in hPa; temperature in degC; fields_updated is the bitmap of which groups are valid
 // (PX4: accel 0x7, gyro 0x38, mag 0x1C0, baro 0x1A00, diff pressure 0x400); id is the sensor instance (0 drives PX4's lockstep).
@@ -126,7 +147,7 @@ struct HilStateQuaternion {
     friend bool operator==(const HilStateQuaternion&, const HilStateQuaternion&) = default;
 };
 
-using Message = std::variant<Heartbeat, CommandLong, HilSensor, HilGps, HilActuatorControls, HilStateQuaternion>;
+using Message = std::variant<Heartbeat, CommandLong, CommandAck, HilSensor, HilGps, HilActuatorControls, HilStateQuaternion>;
 
 [[nodiscard]] uint32_t msgid_of(const Message& m);
 

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <limits>
 #include <string>
 #include <type_traits>
 
@@ -65,6 +66,7 @@ struct Def {
 constexpr Def kDefs[] = {
     {0, 50, 9},     // HEARTBEAT
     {76, 152, 33},  // COMMAND_LONG
+    {77, 143, 10},  // COMMAND_ACK
     {93, 47, 81},   // HIL_ACTUATOR_CONTROLS
     {107, 108, 65}, // HIL_SENSOR
     {113, 124, 39}, // HIL_GPS
@@ -91,6 +93,14 @@ void write_payload(Writer& w, const CommandLong& m) {
     w.put(m.target_system);            // @30
     w.put(m.target_component);         // @31
     w.put(m.confirmation);             // @32
+}
+void write_payload(Writer& w, const CommandAck& m) {
+    w.put(m.command);           // u16 @0
+    w.put(m.result);            // @2
+    w.put(m.progress);          // @3 (extension)
+    w.put(m.result_param2);     // i32 @4 (extension)
+    w.put(m.target_system);     // @8 (extension)
+    w.put(m.target_component);  // @9 (extension)
 }
 void write_payload(Writer& w, const HilSensor& m) {
     w.put(m.time_usec);  // u64 @0
@@ -144,6 +154,16 @@ CommandLong read_command_long(Reader& r) {
     m.target_system = r.get<uint8_t>();
     m.target_component = r.get<uint8_t>();
     m.confirmation = r.get<uint8_t>();
+    return m;
+}
+CommandAck read_command_ack(Reader& r) {
+    CommandAck m;
+    m.command = r.get<uint16_t>();
+    m.result = r.get<uint8_t>();
+    m.progress = r.get<uint8_t>();
+    m.result_param2 = r.get<int32_t>();
+    m.target_system = r.get<uint8_t>();
+    m.target_component = r.get<uint8_t>();
     return m;
 }
 HilSensor read_hil_sensor(Reader& r) {
@@ -216,12 +236,46 @@ std::optional<size_t> max_payload_len(uint32_t msgid) {
     return d ? std::optional<size_t>(d->max_len) : std::nullopt;
 }
 
+namespace {
+constexpr uint16_t kCmdLand = 21;           // MAV_CMD_NAV_LAND
+constexpr uint16_t kCmdTakeoff = 22;        // MAV_CMD_NAV_TAKEOFF
+constexpr uint16_t kCmdArmDisarm = 400;     // MAV_CMD_COMPONENT_ARM_DISARM
+
+CommandLong addressed(uint16_t command, uint8_t target_system, uint8_t target_component) {
+    CommandLong c;
+    c.command = command;
+    c.target_system = target_system;
+    c.target_component = target_component;
+    return c;
+}
+}  // namespace
+
+CommandLong command_arm(bool arm, uint8_t target_system, uint8_t target_component) {
+    CommandLong c = addressed(kCmdArmDisarm, target_system, target_component);
+    c.param[0] = arm ? 1.0f : 0.0f;
+    return c;
+}
+
+CommandLong command_takeoff(float altitude_amsl_m, uint8_t target_system, uint8_t target_component) {
+    CommandLong c = addressed(kCmdTakeoff, target_system, target_component);
+    c.param[3] = c.param[4] = c.param[5] = std::numeric_limits<float>::quiet_NaN();  // yaw, latitude, longitude: unchanged, here
+    c.param[6] = altitude_amsl_m;
+    return c;
+}
+
+CommandLong command_land(uint8_t target_system, uint8_t target_component) {
+    CommandLong c = addressed(kCmdLand, target_system, target_component);
+    c.param[3] = c.param[4] = c.param[5] = std::numeric_limits<float>::quiet_NaN();  // yaw, latitude, longitude: here
+    return c;
+}
+
 uint32_t msgid_of(const Message& m) {
     return std::visit(
         [](const auto& v) -> uint32_t {
             using T = std::decay_t<decltype(v)>;
             if constexpr (std::is_same_v<T, Heartbeat>) return static_cast<uint32_t>(MsgId::heartbeat);
             else if constexpr (std::is_same_v<T, CommandLong>) return static_cast<uint32_t>(MsgId::command_long);
+            else if constexpr (std::is_same_v<T, CommandAck>) return static_cast<uint32_t>(MsgId::command_ack);
             else if constexpr (std::is_same_v<T, HilSensor>) return static_cast<uint32_t>(MsgId::hil_sensor);
             else if constexpr (std::is_same_v<T, HilGps>) return static_cast<uint32_t>(MsgId::hil_gps);
             else if constexpr (std::is_same_v<T, HilActuatorControls>) return static_cast<uint32_t>(MsgId::hil_actuator_controls);
@@ -269,6 +323,7 @@ Result<Message> decode(const Frame& frame) {
     switch (static_cast<MsgId>(frame.msgid)) {
         case MsgId::heartbeat: return Message{read_heartbeat(r)};
         case MsgId::command_long: return Message{read_command_long(r)};
+        case MsgId::command_ack: return Message{read_command_ack(r)};
         case MsgId::hil_actuator_controls: return Message{read_hil_actuator_controls(r)};
         case MsgId::hil_sensor: return Message{read_hil_sensor(r)};
         case MsgId::hil_gps: return Message{read_hil_gps(r)};

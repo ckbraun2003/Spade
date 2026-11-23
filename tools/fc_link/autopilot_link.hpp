@@ -4,7 +4,10 @@
 #include <functional>
 #include <optional>
 
+#include <glm/glm.hpp>
+
 #include "core/error.hpp"
+#include "core/geodesy.hpp"
 #include "fc_host/lockstep.hpp"
 #include "fc_link/frames.hpp"
 #include "fc_link/mavlink.hpp"
@@ -36,6 +39,13 @@ struct ExchangeConfig {
     double density = 1.225;                             // kg/m^3 and the battery's state of charge, for rotor_omega_for_duty
     double soc = 1.0;
     uint32_t imu_binding = 0;                           // the index of the IMU in the sensors the host was opened with
+    std::optional<uint32_t> baro_binding;               // the barometer's and the magnetometer's, when the host has them bound (slice 2)
+    std::optional<uint32_t> mag_binding;
+    // Slice 3, HIL_GPS: the GNSS receiver's binding, the geodetic frame of the autopilot's NED origin, and the Spade world point that IS that origin
+    // (North 0, East 0, Down 0). All three are needed to send a fix; absent, none is sent.
+    std::optional<uint32_t> gnss_binding;
+    std::optional<geo::LocalFrame> geo_frame;
+    glm::dvec3 home_world{0.0};
 };
 
 struct ExchangeResult {
@@ -61,6 +71,7 @@ class AutopilotLink {
     uint64_t boot_steps_ = 0;         // booting replies so far
     uint64_t boot_end_usec_ = 0;      // the autopilot's clock at the end of boot: the offset of the host's time
     bool boot_over_ = false;
+    mavlink::HilSensor last_{};       // the last message sent: a group with no new sample carries its last values (it is not marked updated)
 };
 
 }  // namespace spade::fc_link

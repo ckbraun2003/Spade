@@ -67,6 +67,12 @@ Result<ActuatorReply> Px4Link::exchange(const mavlink::HilSensor& sensor, const 
         return {};
     };
     const auto start = std::chrono::steady_clock::now();
+    if (last_exchange_end_) {  // the HOST GAP: the previous exchange ended (reply accepted or given up) to this one's start
+        const auto gap = std::chrono::duration_cast<std::chrono::nanoseconds>(start - *last_exchange_end_);
+        report_.wall_gap_last = gap;
+        report_.wall_gap_max = std::max(report_.wall_gap_max, gap);
+        report_.wall_gap_total += gap;
+    }
     if (!boot_start_) {
         boot_start_ = start;
         first_sensor_time_usec_ = sensor.time_usec;
@@ -74,16 +80,29 @@ Result<ActuatorReply> Px4Link::exchange(const mavlink::HilSensor& sensor, const 
     ++report_.sensor_messages;
     last_sensor_time_usec_ = sensor.time_usec;
     report_.last_time_usec = sensor.time_usec;
-    if (auto r = send(sensor); !r) return std::unexpected(r.error());
+    const auto note_send = [&] {
+        report_.wall_send_max = std::max(report_.wall_send_max, std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start));
+    };
+    if (auto r = send(sensor); !r) {
+        note_send();
+        return std::unexpected(r.error());
+    }
     if (gps) {
-        if (auto r = send(*gps); !r) return std::unexpected(r.error());
+        if (auto r = send(*gps); !r) {
+            note_send();
+            return std::unexpected(r.error());
+        }
         ++report_.gps_messages;
     }
+    note_send();
 
     const auto note_wait = [&] {
-        const auto waited = std::chrono::steady_clock::now() - start;
-        report_.wall_wait_total += std::chrono::duration_cast<std::chrono::nanoseconds>(waited);
-        report_.wall_wait_max = std::max(report_.wall_wait_max, std::chrono::duration_cast<std::chrono::nanoseconds>(waited));
+        const auto end = std::chrono::steady_clock::now();
+        const auto waited = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
+        report_.wall_wait_total += waited;
+        report_.wall_wait_max = std::max(report_.wall_wait_max, waited);
+        report_.wall_wait_last = waited;
+        last_exchange_end_ = end;
     };
 
     // Until PX4's first reply the wait is short (boot_poll): PX4 boots on the lockstep clock and answers nothing until it is up, so the caller
@@ -174,6 +193,7 @@ Result<ActuatorReply> Px4Link::exchange(const mavlink::HilSensor& sensor, const 
         }
     }
     ++report_.replies;
+    report_.last_reply_time_usec = got.actuator->time_usec;
     report_.max_replies_per_sensor = std::max(report_.max_replies_per_sensor, got.actuator_count);
 
     ActuatorReply out;
