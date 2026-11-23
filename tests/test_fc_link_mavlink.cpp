@@ -174,6 +174,27 @@ TEST(FcLinkMavlink, EncodingMakesTheReferencesBytes) {
     }
 }
 
+// The flight commands the video #3 script sends, built by the helpers and pinned to pymavlink 2.4.49's frames (tools/fc_link/golden/
+// golden_gen_commands.py, run in the pinned px4-dev image with the network off): arm and disarm (400), takeoff (22, altitude 490 m AMSL, yaw and
+// position NaN), land (21, yaw and position NaN). Addressed to system 1 component 1, sent from 1/200 as the other goldens are.
+TEST(FcLinkMavlink, TheFlightCommandHelpersEncodeToTheReferencesBytes) {
+    struct Case {
+        const char* name;
+        uint8_t seq;
+        CommandLong command;
+        const char* hex;
+    };
+    const Case cases[] = {
+        {"arm", 11, command_arm(true), "fd2000000b01c84c00000000803f000000000000000000000000000000000000000000000000900101019914"},
+        {"disarm", 12, command_arm(false), "fd2000000c01c84c0000000000000000000000000000000000000000000000000000000000009001010115b0"},
+        {"takeoff", 13, command_takeoff(490.0f), "fd2000000d01c84c00000000000000000000000000000000c07f0000c07f0000c07f0000f54316000101b03c"},
+        {"land", 14, command_land(), "fd2000000e01c84c00000000000000000000000000000000c07f0000c07f0000c07f00000000150001011097"},
+    };
+    for (const Case& c : cases) {
+        EXPECT_EQ(encode(Header{c.seq, 1, 200}, Message{c.command}), from_hex(c.hex)) << c.name;
+    }
+}
+
 TEST(FcLinkMavlink, ParsingTheReferencesBytesGivesBackTheMessages) {
     for (const Golden& g : golden()) {
         const std::vector<uint8_t> bytes = from_hex(g.hex);

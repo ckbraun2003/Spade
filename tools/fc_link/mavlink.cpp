@@ -216,6 +216,11 @@ std::optional<size_t> max_payload_len(uint32_t msgid) {
     return d ? std::optional<size_t>(d->max_len) : std::nullopt;
 }
 
+// RED: the helpers are not written; they return an empty command.
+CommandLong command_arm(bool, uint8_t, uint8_t) { return CommandLong{}; }
+CommandLong command_takeoff(float, uint8_t, uint8_t) { return CommandLong{}; }
+CommandLong command_land(uint8_t, uint8_t) { return CommandLong{}; }
+
 uint32_t msgid_of(const Message& m) {
     return std::visit(
         [](const auto& v) -> uint32_t {
