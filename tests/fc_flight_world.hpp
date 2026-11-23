@@ -63,14 +63,18 @@ inline constexpr uint32_t kBaroBinding = 1, kMagBinding = 2, kGnssBinding = 3;
 // IST8310 magnetometer 0.3 uT: the grades are that header's: the barometer figure RECALLED from the datasheet, the magnetometer figure ASSUMED equal to
 // one LSB), pinned equal to it by a test. White noise only: the profile's slow biases are left out so the hover offset can still be read. A real sensor never
 // repeats a reading bit for bit, and PX4's sensor validators read a value that repeats as a FROZEN sensor (STALE: BARO #0 and #1 and MAG #0 in the logs of
-// dry runs 3 and 4b, with the barometer's logged pressure identical for 22 s at rest). RED: zero, the engine's default, until the tests below pass.
-inline constexpr float kBaroSigmaPa = 0.0f;
-inline constexpr float kMagSigmaUt = 0.0f;
+// dry runs 3 and 4b, with the barometer's logged pressure identical for 22 s at rest).
+inline constexpr float kBaroSigmaPa = 1.2f;  // MS5611: grade RECALLED (the datasheet's RMS noise at the highest oversampling, 0.012 mbar), not re-read
+inline constexpr float kMagSigmaUt = 0.3f;   // IST8310: grade ASSUMED, one LSB of its published 0.3 uT resolution; NOT a measured noise of the sensor
 
 // The boot messages' noise for a flight run: Core's defaults, except the barometer's and magnetometer's sigmas, which are the world's (the same kit profile), so
 // the boot and the flight agree on how noisy those two sensors are. The accelerometer's and gyroscope's boot sigmas (0.02 m/s2, 0.002 rad/s) are Core's and stay.
-// RED: the stub returns the defaults.
-[[nodiscard]] inline spade::fc_host::BootConfig flight_boot_config() { return spade::fc_host::BootConfig{}; }
+[[nodiscard]] inline spade::fc_host::BootConfig flight_boot_config() {
+    spade::fc_host::BootConfig boot{};
+    boot.sigma_pressure_pa = kBaroSigmaPa;
+    boot.sigma_mag_ut = kMagSigmaUt;
+    return boot;
+}
 
 [[nodiscard]] inline std::optional<FlightWorld> make_flight_world() {
     namespace x5 = spade::test::x500;

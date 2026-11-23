@@ -109,7 +109,7 @@ Result<ExchangeResult> AutopilotLink::exchange(fc_host::LockstepHost& host) {
     if (!boot_over_) {
         // The autopilot is booting, or has not said so yet: the world is held and the message is built from the held state.
         const uint64_t step = boot_steps_ + 1u;
-        const Result<fc_host::BootReadings> held = host.boot_readings(step);
+        const Result<fc_host::BootReadings> held = host.boot_readings(step, config_.boot);
         if (!held) return std::unexpected(held.error());
         put_imu(message, config_.frame, held->accel_body, held->gyro_body);
         message.time_usec = step * period_usec;
@@ -188,7 +188,7 @@ Result<ExchangeResult> AutopilotLink::exchange(fc_host::LockstepHost& host) {
         return out;
     }
     if (!boot_over_) {
-        const Result<void> noted = host.note_boot(boot_steps_, message.time_usec);
+        const Result<void> noted = host.note_boot(boot_steps_, message.time_usec, config_.boot);
         if (!noted) return std::unexpected(noted.error());
         boot_end_usec_ = message.time_usec;
         boot_over_ = true;
