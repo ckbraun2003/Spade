@@ -19,6 +19,10 @@
       no tests    ctest finds no `fc` test (exit 8): exit 1, container stopped (--no-tests=error is passed)
       bad run id  a run id with a slash: exit 1, nothing called
       filter      -Filter reaches ctest as -R
+      k10         nothing fc-run wrote into the run folder (summary.txt, ctest.log, ctest-junit.xml) holds the user's folder: the autopilot log's path is
+                  relative to the run folder and the ctest output goes through the installer records' redaction (ConvertTo-PublicRecord). The test runs with a
+                  FAKE profile folder (USERPROFILE, LOCALAPPDATA, APPDATA moved under its own temp folder) that holds the build tree and the run folder, so
+                  the leak shows whatever the real user is called; a leak is any file that still names the test's whole temp folder.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File tests\fc_run_test.ps1 <repo root>
@@ -38,10 +42,16 @@ $ps = Join-Path $PSHOME 'powershell.exe'
 $work = Join-Path ([IO.Path]::GetTempPath()) ('spade-fc-run-test-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 
+$savedFolders = @{ USERPROFILE = $env:USERPROFILE; LOCALAPPDATA = $env:LOCALAPPDATA; APPDATA = $env:APPDATA }
 try {
+    # A fake user profile inside the test's own folder: the build tree and the run folder live under it, as they do under the real one.
+    $fakeHome = Join-Path $work 'Users\Ada'
+    $env:USERPROFILE = $fakeHome
+    $env:LOCALAPPDATA = Join-Path $fakeHome 'AppData\Local'
+    $env:APPDATA = Join-Path $fakeHome 'AppData\Roaming'
     $fake = Join-Path $work 'fake'
-    $build = Join-Path $work 'build'
-    $outRoot = Join-Path $work 'out'
+    $build = Join-Path $fakeHome 'build'
+    $outRoot = Join-Path $fakeHome 'out'
     New-Item -ItemType Directory -Force -Path $fake, $build, $outRoot | Out-Null
     Set-Content -LiteralPath (Join-Path $build 'CTestTestfile.cmake') '# fake'
     $calls = Join-Path $work 'calls.txt'
@@ -73,7 +83,7 @@ switch ([int] $env:FAKE_PX4_START_CODE) {
     0 { Write-Output "px4-sitl: up spade-px4-$RunId -> ${HostAddress}:4560"; exit 0 }
     2 { Write-Output 'px4-sitl: no autopilot image spade-px4-sitl:v1.17.0 (build it from tools/fc_link/px4)'; exit 2 }
     3 { Write-Output 'px4-sitl: docker is not reachable (is Docker Desktop running?)'; exit 3 }
-    4 { Write-Output "px4-sitl: spade-px4-$RunId exited at start; its log follows"; Write-Output 'ERROR [px4] no such file: etc/init.d-posix/rcS'; exit 4 }
+    4 { Write-Output "px4-sitl: spade-px4-$RunId exited at start; its log follows"; Write-Output 'ERROR [px4] no such file: etc/init.d-posix/rcS'; Write-Output "INFO [px4] log folder $OutDir"; exit 4 }
     5 { Write-Output "px4-sitl: a container named spade-px4-$RunId already exists (one container per run id)"; exit 5 }
     default { Write-Output 'px4-sitl: something nobody planned'; exit ([int] $env:FAKE_PX4_START_CODE) }
 }
@@ -84,8 +94,15 @@ switch ([int] $env:FAKE_PX4_START_CODE) {
 echo ctest %*>>"%FAKE_CALLS%"
 for %%a in (%*) do if "%%a"=="-N" goto list
 echo %SPADE_FC_RUN_ID%^|%SPADE_FC_HOST_ADDR%^|%SPADE_FC_OUT_DIR%>"%FAKE_CTEST_ENV%"
+set "NEXTJ="
+for %%a in (%*) do call :scan "%%~a"
 type "%FAKE_CTEST_BODY%"
 exit /b %FAKE_CTEST_CODE%
+:scan
+if defined NEXTJ (type "%FAKE_CTEST_BODY%">%1)
+set "NEXTJ="
+if "%~1"=="--output-junit" set "NEXTJ=1"
+goto :eof
 :list
 echo Test project fake
 echo   Test #1: FcLiveLink.LockstepTenThousandSteps
@@ -116,7 +133,13 @@ exit /b 0
         return [pscustomobject]@{ Code = $code; Text = $text; Calls = $callLines; Summary = $summary }
     }
 
-    $passBody = "1/2 Test #1: FcLiveLink.LockstepTenThousandSteps ... Passed`n2/2 Test #2: FcLiveFlight.ScriptedFlight ... Passed`n`n100% tests passed, 0 tests failed out of 2"
+    # The files of a run folder that still name the test's whole temp folder (it holds the fake home), whichever slash and case.
+    function LeakedFiles([string] $Folder) {
+        $needle = $work.Replace('\', '/').ToLowerInvariant()
+        @(Get-ChildItem -LiteralPath $Folder -Recurse -File | Where-Object { [IO.File]::ReadAllText($_.FullName).Replace('\', '/').ToLowerInvariant().Contains($needle) } | ForEach-Object { $_.Name })
+    }
+
+    $passBody = "Test project $build`n1/2 Test #1: FcLiveLink.LockstepTenThousandSteps ... Passed`n2/2 Test #2: FcLiveFlight.ScriptedFlight ... Passed`n`n100% tests passed, 0 tests failed out of 2"
 
     # pass
     $r = Run 'pass' 'case-pass' 0 0 0 $passBody
@@ -138,12 +161,23 @@ exit /b 0
     Expect 'pass' ($r.Summary.Contains('px4.ulg')) "the autopilot log path is not in the summary: $($r.Summary)"
     Expect 'pass' ($r.Summary.Contains('tests skipped: 0')) 'no skipped count'
     Expect 'pass' (Test-Path -LiteralPath (Join-Path (Join-Path $outRoot 'case-pass') 'ctest.log')) 'no ctest.log in the run folder'
+    # k10: the autopilot log's path is relative to the run folder; what ctest printed and wrote has the home folder redacted (and still has its line).
+    $passFolder = Join-Path $outRoot 'case-pass'
+    Expect 'k10' ($r.Summary -match '(?m)^autopilot log: px4-log\\2026-11-21\\px4\.ulg\r?$') "the autopilot log is not given relative to the run folder: $($r.Summary)"
+    $leaks = @(LeakedFiles $passFolder)
+    Expect 'k10' ($leaks.Count -eq 0) "the user's folder is still in: $($leaks -join ', ')"
+    $ctestLog = if (Test-Path -LiteralPath (Join-Path $passFolder 'ctest.log')) { Get-Content -LiteralPath (Join-Path $passFolder 'ctest.log') -Raw } else { '' }
+    Expect 'k10' ($ctestLog.Contains('Test project %USERPROFILE%\build')) "ctest.log lost or kept its path line: $ctestLog"
+    $junit = if (Test-Path -LiteralPath (Join-Path $passFolder 'ctest-junit.xml')) { Get-Content -LiteralPath (Join-Path $passFolder 'ctest-junit.xml') -Raw } else { '' }
+    Expect 'k10' ($junit.Contains('Test project %USERPROFILE%\build')) "ctest-junit.xml is missing or kept its path: $junit"
 
     # fail
     $r = Run 'fail' 'case-fail' 0 0 8 "1/2 Test #1: FcLiveLink.LockstepTenThousandSteps ... ***Failed`n`n50% tests passed, 1 tests failed out of 2"
     Expect 'fail' ($r.Code -eq 1) "exit $($r.Code)"
     Expect 'fail' ($r.Summary.StartsWith('fc run: FAIL')) "summary: $($r.Summary)"
     Expect 'fail' ($r.Calls -contains 'stop case-fail') 'the container was not stopped after a failed test'
+    $leaks = @(LeakedFiles (Join-Path $outRoot 'case-fail'))
+    Expect 'k10' ($leaks.Count -eq 0) "a failed run's folder still names the user's folder in: $($leaks -join ', ')"
 
     # skipped
     $r = Run 'skipped' 'case-skip' 0 0 0 "1/2 Test #1: FcLiveLink.LockstepTenThousandSteps ... Passed`n2/2 Test #2: FcLiveFlight.ScriptedFlight ...***Skipped   0.01 sec`n`n100% tests passed, 0 tests failed out of 2"
@@ -175,6 +209,9 @@ exit /b 0
     Expect 'start 4' ($r.Summary.Contains('did not stay up')) "the reason is not named: $($r.Summary)"
     Expect 'start 4' ($r.Summary.Contains('no such file: etc/init.d-posix/rcS')) "PX4's own log lines are not in the summary: $($r.Summary)"
     Expect 'start 4' (-not ($r.Calls -match '^(ctest .*-L fc --output|stop)')) "ctest or stop ran: $($r.Calls -join ' / ')"
+    Expect 'start 4' ($r.Summary.Contains('INFO [px4] log folder')) "PX4's own log lines are not in the summary: $($r.Summary)"
+    $leaks = @(LeakedFiles (Join-Path $outRoot 'case-s4'))
+    Expect 'k10' ($leaks.Count -eq 0) "a failed start's summary still names the user's folder in: $($leaks -join ', ')"
 
     $r = Run 'start 5' 'case-s5' 0 5 0 $passBody
     Expect 'start 5' ($r.Code -eq 1) "exit $($r.Code)"
@@ -228,6 +265,7 @@ exit /b 0
     Expect 'filter' ($r.Calls -match '^ctest .*-R FcLiveFlight') 'the filter did not reach ctest as -R'
 }
 finally {
+    $env:USERPROFILE = $savedFolders.USERPROFILE; $env:LOCALAPPDATA = $savedFolders.LOCALAPPDATA; $env:APPDATA = $savedFolders.APPDATA
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 }
 

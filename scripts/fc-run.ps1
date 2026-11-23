@@ -17,7 +17,8 @@
          Docker Desktop. Its LAST line is the bare newest .ulg path, or `none` (PX4 wrote no log: said in the summary, not a failure). Exit 3 (Docker
          unreachable: the container may still be running) and 6 (no run folder known) are FAIL; a "no container named" line (it was gone) is NOT GREEN.
       5  <run folder>\summary.txt: `fc run: PASS` or `fc run: FAIL` or `fc run: NOT GREEN`, the run id, the commit, the ctest counts, every skipped test by
-         name, the autopilot log's path (the last line px4-sitl.ps1 printed when it stopped), and the seconds.
+         name, the autopilot log's path (the last line px4-sitl.ps1 printed when it stopped, relative to the run folder), and the seconds. What this script
+         writes into the run folder (summary.txt, ctest.log, ctest-junit.xml) has the user's folders redacted, as the installer records do (K10).
     Exit: 0 only when ctest exited 0, at least one test ran, none skipped and the container was there at the end; 1 a failed test, a missing ctest or build
     tree, a daemon that never answered, or a start or stop failure other than "no image" (px4-sitl.ps1 exit 3, 4, 5, 6 or an unnamed one);
     2 not green without a failure (no image, a test skipped, or the container gone when the tests ended).
@@ -74,6 +75,11 @@ New-Item -ItemType Directory -Force -Path $out | Out-Null
 $summary = Join-Path $out 'summary.txt'
 $ps = Join-Path $PSHOME 'powershell.exe'
 
+# What goes into the run folder is shareable (the checker's K10: no user folder in any text file), so the files this script writes pass through the
+# installer records' redaction (scripts\package-test-record.ps1): the profile, local-app-data and roaming folders become %USERPROFILE%, %LOCALAPPDATA%
+# and %APPDATA%. The console keeps the real paths. The run folder's own files (the tests', PX4's) are theirs to keep clean.
+. (Join-Path $PSScriptRoot 'package-test-record.ps1')
+
 function Get-Commit {
     $c = ''
     try { $c = (& git -C $Repo rev-parse --short=12 HEAD 2>$null | Select-Object -First 1) } catch { $c = '' }
@@ -83,7 +89,7 @@ function Get-Commit {
 # One place that writes the verdict, the summary file and the exit code.
 function Finish([string] $Verdict, [int] $Code, [string[]] $Lines) {
     $text = @("fc run: $Verdict", "run: $RunId", "commit: $(Get-Commit)", "seconds: $([int] $clock.Elapsed.TotalSeconds)") + $Lines
-    Set-Content -LiteralPath $summary -Value $text -Encoding ASCII
+    Set-Content -LiteralPath $summary -Value @($text | ForEach-Object { ConvertTo-PublicRecord $_ }) -Encoding ASCII
     $text | ForEach-Object { Write-Host "fc-run: $_" }
     exit $Code
 }
@@ -138,7 +144,13 @@ try {
     $stopCode = $LASTEXITCODE
     Remove-Item Env:SPADE_FC_RUN_ID, Env:SPADE_FC_HOST_ADDR, Env:SPADE_FC_OUT_DIR -ErrorAction SilentlyContinue
 }
-Set-Content -LiteralPath (Join-Path $out 'ctest.log') -Value $ctestOut -Encoding ASCII
+Set-Content -LiteralPath (Join-Path $out 'ctest.log') -Value @($ctestOut | ForEach-Object { ConvertTo-PublicRecord $_ }) -Encoding ASCII
+# ctest wrote the junit file itself, with the build tree and the test paths in it: the same redaction, in place.
+$junitPath = Join-Path $out 'ctest-junit.xml'
+if (Test-Path -LiteralPath $junitPath) {
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText($junitPath, (ConvertTo-PublicRecord ([IO.File]::ReadAllText($junitPath, $utf8))), $utf8)
+}
 
 # 5: the summary. A skipped test is named and never counts toward green.
 $skipped = @($ctestOut | Where-Object { $_ -match '\(Skipped\)' -or $_ -match '\*\*\*Skipped' } | ForEach-Object {
@@ -149,6 +161,11 @@ $counts = ($ctestOut | Where-Object { $_ -match 'tests passed, \d+ tests failed 
 $stopLines = @($stopOut | Where-Object { $_.Trim() })
 $last = if ($stopLines.Count -gt 0) { $stopLines[-1].Trim() } else { '' }
 $ulg = if (-not $last) { '(px4-sitl.ps1 -Stop printed nothing)' } elseif ($last -eq 'none') { 'none (PX4 wrote no .ulg)' } else { $last }
+# The log's path is given relative to the run folder (it lives in it): the summary travels with the folder and names no host folder.
+$outFull = [IO.Path]::GetFullPath($out).TrimEnd('\', '/')
+if ($ulg.Length -gt $outFull.Length + 1 -and $ulg.StartsWith($outFull, [StringComparison]::OrdinalIgnoreCase) -and ($ulg[$outFull.Length] -eq '\' -or $ulg[$outFull.Length] -eq '/')) {
+    $ulg = $ulg.Substring($outFull.Length + 1)
+}
 $gone = @($stopLines | Where-Object { $_ -like '*no container named*' }).Count -gt 0
 $lines = @("ctest exit: $ctestCode", $(if ($counts) { "ctest: $counts" } else { 'ctest: no summary line' }), "tests skipped: $($skipped.Count)") +
     @($skipped | ForEach-Object { "skipped: $_" }) + @("autopilot log: $ulg")
