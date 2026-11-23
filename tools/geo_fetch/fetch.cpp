@@ -226,6 +226,10 @@ FetchResult fetch_map(const FetchRequest& q, const FetchEnv& env) {
     if (const Result<void> anchor = geo::validate_anchor({q.lat_deg, q.lon_deg, 0.0}); !anchor) {
         return failure(FetchResultKind::refused, anchor.error().context);
     }
+    // Where the height model does not hold (another vertical datum, or no GEOID18), by name and before any request.
+    if (const std::string why = height_model_refusal(q.lat_deg, q.lon_deg); !why.empty()) {
+        return failure(FetchResultKind::refused, why);
+    }
     if (!(q.side_m >= kMapMinSideM && q.side_m <= kMapMaxSideM)) {
         return failure(FetchResultKind::refused, std::format("the side must be between {} and {} m (1 km at most)", kMapMinSideM, kMapMaxSideM));
     }
