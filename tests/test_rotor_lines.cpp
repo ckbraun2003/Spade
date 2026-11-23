@@ -190,6 +190,26 @@ TEST(VehicleRotorLines, RowsGiveTheirLinesWhereTheirDiscsWere) {
     EXPECT_EQ(lines[2].omega, 0.0f) << "a disabled row's blades stand in the air";
 }
 
+// The kernel the caller resolved reaches every rotor's line (and the default, 2, is the line's own: nothing changes when it is left out).
+TEST(VehicleRotorLines, TheResolvedKernelReachesEveryLine) {
+    const af::GridShape grid{64, 64, 64, 0.01f};
+    spade::BodyState body{};
+    body.pos = glm::vec3(0.3f, 0.3f, 0.3f);
+    body.orient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    const std::array<spade::vehicles::RotorRow, 2> rows{row_of({0.11f, 0.024f, 0.0f}, 1.0f, 801.25f), row_of({-0.11f, 0.024f, 0.0f}, -1.0f, 790.0f)};
+    const std::array<float, 2> psi{0.2f, 3.0f};
+    const af::BladeShape blade = two_blade();
+    const af::PolarTable polar = af::estimated_polar();
+    std::array<af::LineRotor, 2> lines{};
+    ASSERT_TRUE(spade::vehicles::rotor_lines(rows, body, psi, {0.0f, 0.0f, 0.0f}, grid, blade, polar, lines).has_value());
+    for (const af::LineRotor& l : lines) EXPECT_EQ(l.eps_cells, 2.0f) << "left out: the line's default";
+    ASSERT_TRUE(spade::vehicles::rotor_lines(rows, body, psi, {0.0f, 0.0f, 0.0f}, grid, blade, polar, lines, 2.97f).has_value());
+    for (const af::LineRotor& l : lines) EXPECT_EQ(l.eps_cells, 2.97f);
+    const auto refused = spade::vehicles::rotor_lines(rows, body, psi, {0.0f, 0.0f, 0.0f}, grid, blade, polar, lines, 3.5f);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_NE(refused.error().context.find("eps_cells"), std::string::npos) << refused.error().context;
+}
+
 TEST(VehicleRotorLines, RefusesWhatItCannotMapNamingTheRotor) {
     const af::GridShape grid{64, 64, 64, 0.01f};
     spade::BodyState body{};

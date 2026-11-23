@@ -33,6 +33,6 @@ namespace spade::vehicles {
 [[nodiscard]] Result<void> rotor_lines(std::span<const RotorRow> rows, const BodyState& body, std::span<const float> psi,
                                        glm::vec3 grid_origin_world, const physics::airflow::GridShape& grid,
                                        const physics::airflow::BladeShape& blade, const physics::airflow::PolarTable& polar,
-                                       std::span<physics::airflow::LineRotor> out);
+                                       std::span<physics::airflow::LineRotor> out, float eps_cells = 2.0f);
 
 }  // namespace spade::vehicles

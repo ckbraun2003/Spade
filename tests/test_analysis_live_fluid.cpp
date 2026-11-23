@@ -529,3 +529,84 @@ TEST(AnalysisLiveFluid, AHoldPutsTheDroneHigherInTheBoxAndMovesEverythingWithIt)
     EXPECT_GT(centred.solids().solid_cells, 0u);
     EXPECT_EQ(held.solids().solid_cells, centred.solids().solid_cells) << "the ball's cells, 16 cells up";
 }
+
+// THE ROTORS' LINES' KERNEL (O207): a case that asks for none runs at its polar's declared fit kernel (else the line's own 2); a case that
+// asks for another is refused by name; the run's label carries the kernel whenever it is not the default, so a run record cannot hide it.
+TEST(AnalysisLiveFluid, TheLinesKernelIsTheCasesOrThePolarsDeclared) {
+    const Powered p = an::test::powered_quad();
+    const an::ResolvedCase r = windy(p, 0.025f, 0.002f);  // 32^3: the kernel's reach (R + 6 dx) stays inside the box
+    const float radius = p.model.rotors[0].radius;
+    an::LiveLines lines;
+    lines.blade.blades = 2;
+    lines.blade.radius = radius;
+    lines.blade.stations = {{0.15f * radius, 0.15f * radius, 30.0f}, {0.55f * radius, 0.2f * radius, 20.0f}, {radius, 0.1f * radius, 12.0f}};
+    lines.polar = af::estimated_polar();
+    TwinLog log;
+    const auto label_of = [&](const an::LiveLines& l) -> std::string {
+        spade::Result<an::LiveRun> run = an::LiveRun::start(r, p.model, twin(log), &l);
+        EXPECT_TRUE(run.has_value()) << (run ? "" : run.error().context);
+        return run ? run->run_label() : std::string();
+    };
+    const std::string plain = label_of(lines);
+    EXPECT_EQ(plain.find("kernel"), std::string::npos) << "no kernel asked, none declared: the label is what it was: " << plain;
+    an::LiveLines explicit_two = lines;
+    explicit_two.kernel_cells = 2.0f;
+    EXPECT_EQ(label_of(explicit_two), plain) << "an explicit 2 is the default";
+    an::LiveLines declared = lines;
+    declared.fit_kernel_cells = 2.97f;
+    const std::string carried = label_of(declared);
+    EXPECT_NE(carried.find("2.97"), std::string::npos) << "a declared kernel runs and is named: " << carried;
+    an::LiveLines clash = declared;
+    clash.kernel_cells = 3.0f;
+    const spade::Result<an::LiveRun> refused = an::LiveRun::start(r, p.model, twin(log), &clash);
+    ASSERT_FALSE(refused.has_value()) << "an explicit kernel that is not the polar's is refused";
+    EXPECT_NE(refused.error().context.find("kernel"), std::string::npos) << refused.error().context;
+}
+
+// A device that records the lines each step hands it: what reaches the device is what the run resolved.
+class LineSpy final : public an::LiveFluid {
+  public:
+    explicit LineSpy(std::vector<float>& eps) : eps_(eps) {}
+    [[nodiscard]] spade::Result<af::FluidHealth> step(std::span<const af::ActuatorDisc>) override { return af::FluidHealth{}; }
+    [[nodiscard]] spade::Result<af::FluidHealth> step(std::span<const af::ActuatorDisc>, std::span<const af::LineRotor> lines) override {
+        for (const af::LineRotor& l : lines) eps_.push_back(l.eps_cells);
+        return af::FluidHealth{};
+    }
+    [[nodiscard]] spade::Result<void> publish(const af::PublishInput&, spade::FlowVolume&) override { return {}; }
+    [[nodiscard]] spade::Result<void> read(af::MacGrid&) const override { return {}; }
+
+  private:
+    std::vector<float>& eps_;
+};
+
+TEST(AnalysisLiveFluid, TheKernelTheRunResolvedIsTheOneEveryLineReachesTheDeviceAt) {
+    const Powered p = an::test::powered_quad();
+    const an::ResolvedCase r = windy(p, 0.025f, 0.002f);  // 32^3: the kernel's reach (R + 6 dx) stays inside the box
+    const float radius = p.model.rotors[0].radius;
+    an::LiveLines lines;
+    lines.blade.blades = 2;
+    lines.blade.radius = radius;
+    lines.blade.stations = {{0.15f * radius, 0.15f * radius, 30.0f}, {0.55f * radius, 0.2f * radius, 20.0f}, {radius, 0.1f * radius, 12.0f}};
+    lines.polar = af::estimated_polar();
+    const auto eps_after_a_step = [&](const an::LiveLines& l) {
+        std::vector<float> eps;
+        const an::LiveFluidMaker maker = [&eps](const an::LiveFluidStart&) -> spade::Result<std::unique_ptr<an::LiveFluid>> {
+            return std::unique_ptr<an::LiveFluid>(new LineSpy(eps));
+        };
+        spade::Result<an::LiveRun> run = an::LiveRun::start(r, p.model, maker, &l);
+        EXPECT_TRUE(run.has_value()) << (run ? "" : run.error().context);
+        if (!run) return eps;
+        const spade::Result<void> stepped = run->step(an::Controls{true, 0.5f, 0.0f, 0.0f, 0.0f});
+        EXPECT_TRUE(stepped.has_value()) << (stepped ? "" : stepped.error().context);
+        return eps;
+    };
+    const std::vector<float> plain = eps_after_a_step(lines);
+    ASSERT_EQ(plain.size(), p.model.rotors.size());
+    for (const float e : plain) EXPECT_EQ(e, 2.0f) << "no kernel asked, none declared: the line's own 2";
+    an::LiveLines declared = lines;
+    declared.fit_kernel_cells = 2.97f;
+    for (const float e : eps_after_a_step(declared)) EXPECT_EQ(e, 2.97f) << "the polar's declared kernel";
+    an::LiveLines asked = lines;
+    asked.kernel_cells = 3.0f;
+    for (const float e : eps_after_a_step(asked)) EXPECT_EQ(e, 3.0f) << "the case's kernel, with no declaration";
+}

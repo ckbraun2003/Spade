@@ -17,6 +17,7 @@ prop:
     airfoil: "unknown"
     alpha_0_deg: -0.506
     cd_scale: 1.9354
+    fit_kernel_cells: 2.55
 sources:
   diameter: {source: "uiuc_propdb", grade: measured, note: "1.85 in, UIUC's, as its coefficients were reduced; Luis & Le Ny give 0.04626"}
   pitch: {grade: assumed, note: "not known; identity only"}
@@ -34,3 +35,4 @@ sources:
   blade.airfoil: {grade: assumed, note: "unknown for every prop (P-b); Physics picks the polar"}
   blade.alpha_0_deg: {source: "uiuc_propdb", grade: fitted, note: "fitted through the actuator line WITH THE TIP CORRECTION ON to UIUC's static C_T and C_Q (docs/design/physics/plans/2026-11-17-b1-polar-fits.md); valid only at the kernel width and resolution fitted and with the tip correction on: 6 mm kernel (2.55 cells), R/dx 10, 16582 rpm, D 47 mm; line C_T 0.15653 vs UIUC 0.15586, C_Q 0.016599 vs 0.016764; a static-only prop, one point, nothing held out"}
   blade.cd_scale: {source: "uiuc_propdb", grade: fitted, note: "fitted through the actuator line WITH THE TIP CORRECTION ON to UIUC's static C_T and C_Q (docs/design/physics/plans/2026-11-17-b1-polar-fits.md); valid only at the kernel width and resolution fitted and with the tip correction on: 6 mm kernel (2.55 cells), R/dx 10, 16582 rpm, D 47 mm; line C_T 0.15653 vs UIUC 0.15586, C_Q 0.016599 vs 0.016764; a static-only prop, one point, nothing held out"}
+  blade.fit_kernel_cells: {source: "uiuc_propdb", grade: fitted, note: "the kernel width, in cells, the polar was fitted at (docs/design/physics/plans/2026-11-17-b1-polar-fits.md): a line runs this polar at this width, and a case that asks for another width is refused by name; the polar holds only WITH THE TIP CORRECTION ON at the kernel and resolution fitted: 6 mm kernel (2.55 cells), R/dx 10, 16582 rpm, D 47 mm; line C_T 0.15653 vs UIUC 0.15586, C_Q 0.016599 vs 0.016764; a static-only prop, one point, nothing held out"}

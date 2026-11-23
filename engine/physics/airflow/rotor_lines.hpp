@@ -39,7 +39,13 @@ struct LineRotorSpec {
     float psi = 0.0f;                               // rad, the blade angle
     const BladeShape* blade = nullptr;
     const PolarTable* polar = nullptr;
+    float eps_cells = 2.0f;  // the line's kernel width in cells (LineRotor::eps_cells); refused outside [1, 3]
 };
+
+// The kernel width in cells a case's lines run at. `case_cells` is what the case asks for (0 = it asks for none) and `fit_cells` what
+// the polar declares it was fitted at (0 = none declared). Neither: 2 (the line's own default). Only the polar's: that. Only the
+// case's: that. Both and different (by more than 1e-6): refused, naming both. Either outside [1, 3] (and not 0): refused naming it.
+[[nodiscard]] Result<float> resolve_line_kernel(float case_cells, float fit_cells);
 
 // One rotor's line. Refused (invalid_argument), naming the field: a body pose or a rotor field not finite; an orientation, the
 // body's or the rotor's, whose squared length is not within 1e-5 of 1; a spin other than -1 or +1; omega negative; no blade or no

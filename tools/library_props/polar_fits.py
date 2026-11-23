@@ -13,7 +13,9 @@ re-running this tool fails the suite.
         --out tests/library_polar_fits.gen.hpp
 
 stdlib only. A fit is refused by name if its id repeats, a number is not finite,
-cd_scale is not above 0, or alpha_0_deg is outside (-30, 10).
+cd_scale is not above 0, alpha_0_deg is outside (-30, 10), or fit_kernel_cells (the
+kernel width, in cells, the fit was made at: the line runs the polar at it, and a case
+that asks for another width is refused) is outside [1, 3].
 """
 
 import argparse
@@ -74,6 +76,9 @@ def read_fits(path):
             v = f.get(key)
             if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
                 raise ToolError(f"{name}: {key} must be a finite number")
+        k = f.get("fit_kernel_cells")
+        if isinstance(k, bool) or not isinstance(k, (int, float)) or not math.isfinite(k) or not 1.0 <= k <= 3.0:
+            raise ToolError(f"{name}: fit_kernel_cells must be a finite number in [1, 3]")
         if not f["cd_scale"] > 0.0:
             raise ToolError(f"{name}: cd_scale must be above 0, found {f['cd_scale']}")
         if not -30.0 < f["alpha_0_deg"] < 10.0:
@@ -108,6 +113,7 @@ struct Fit {
     std::string_view id;  // a library prop's id (tests/library_props.gen.hpp)
     double alpha_0_deg;
     double cd_scale;
+    double fit_kernel_cells;  // the kernel width, in cells, the fit was made at (the line's eps_cells)
     std::string_view fit;  // the conditions and the match, for the part file's citation
 };
 """
@@ -126,6 +132,7 @@ def generate(fits_path):
         out.append(f"        {text_literal(f['id'])},")
         out.append(f"        {number(f['alpha_0_deg'])},")
         out.append(f"        {number(f['cd_scale'])},")
+        out.append(f"        {number(f['fit_kernel_cells'])},")
         out.append(f"        {text_literal(f['fit'])},")
         out.append("    },")
     out.append("}};")

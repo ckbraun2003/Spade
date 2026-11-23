@@ -112,6 +112,7 @@ add_executable(spade_tests
     test_airflow_publish.cpp
     test_rotor_discs.cpp
     test_rotor_lines.cpp
+    test_fit_kernel.cpp
     test_airflow_grid_io.cpp
     test_airflow_solids.cpp
     test_airflow_solids_solve.cpp

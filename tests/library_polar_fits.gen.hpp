@@ -15,13 +15,14 @@ namespace spade::test::library_polar_fits {
 
 // FNV-1a 64 of the tool and of its table, CRLF read as LF.
 // tests/test_library_props.cpp recomputes both from the source tree.
-inline constexpr std::uint64_t kToolHash = 0xf8dc2e15695d263bull;  // polar_fits.py
-inline constexpr std::uint64_t kFitsHash = 0xe6eb0abfca348eafull;  // polar_fits.json
+inline constexpr std::uint64_t kToolHash = 0xc1cde705f464b4d6ull;  // polar_fits.py
+inline constexpr std::uint64_t kFitsHash = 0x163e07eb8a36b54full;  // polar_fits.json
 
 struct Fit {
     std::string_view id;  // a library prop's id (tests/library_props.gen.hpp)
     double alpha_0_deg;
     double cd_scale;
+    double fit_kernel_cells;  // the kernel width, in cells, the fit was made at (the line's eps_cells)
     std::string_view fit;  // the conditions and the match, for the part file's citation
 };
 
@@ -30,24 +31,28 @@ inline constexpr std::array<Fit, 4> kFits{{
         "uiuc_apce_10x5",
         -3.0645,
         1.3514,
+        2.93,
         "12 mm kernel (2.93 cells), R/dx 31, 5000 rpm, D 10 in; line C_T 0.09619 vs UIUC 0.09636, C_Q 0.005886 vs 0.005870",
     },
     {
         "uiuc_apce_9x4.5",
         -2.512,
         1.2907,
+        2.94,
         "12 mm kernel (2.94 cells), R/dx 28, 5008 rpm, D 9 in; line C_T 0.09816 vs UIUC 0.09818, C_Q 0.006146 vs 0.006129",
     },
     {
         "uiuc_mit_5x4",
         -4.3344,
         2.2885,
+        2.83,
         "12 mm kernel (2.83 cells), R/dx 15, 6057 rpm, D 5 in, 3 blades; line C_T 0.18089 vs UIUC 0.18147, C_Q 0.019029 vs 0.018924; a LARGE drag scale, a calibration to the static point and not a measured section",
     },
     {
         "uiuc_cfnq_45t1",
         -0.506,
         1.9354,
+        2.55,
         "6 mm kernel (2.55 cells), R/dx 10, 16582 rpm, D 47 mm; line C_T 0.15653 vs UIUC 0.15586, C_Q 0.016599 vs 0.016764; a static-only prop, one point, nothing held out",
     },
 }};

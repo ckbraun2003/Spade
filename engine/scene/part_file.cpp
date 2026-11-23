@@ -149,7 +149,7 @@ constexpr PartKind kind_of() {
 
 constexpr std::array<std::string_view, 5> kBladeKeys = {"r_over_r", "c_over_r", "beta_deg", "hub_cutout", "airfoil"};
 // The optional polar of a blade (part_file.hpp, POLAR): both keys or neither.
-constexpr std::array<std::string_view, 2> kBladePolarKeys = {"alpha_0_deg", "cd_scale"};
+constexpr std::array<std::string_view, 3> kBladePolarKeys = {"alpha_0_deg", "cd_scale", "fit_kernel_cells"};
 
 // Every key of the block, cited or not.
 struct KeyList {
@@ -202,7 +202,10 @@ template <class Part>
         if (part.blade) {
             for (const std::string_view k : kBladeKeys) list.keys.push_back("blade." + std::string(k));
             if (part.blade->alpha_0_deg || part.blade->cd_scale) {
-                for (const std::string_view k : kBladePolarKeys) list.keys.push_back("blade." + std::string(k));
+                for (const std::string_view k : kBladePolarKeys) {
+                    if (k == "fit_kernel_cells" && !part.blade->fit_kernel_cells) continue;  // optional: no key, no citation
+                    list.keys.push_back("blade." + std::string(k));
+                }
             }
         }
     }
@@ -328,6 +331,16 @@ struct FiniteCheck {
         if (Result<void> r = check_finite(what + ".cd_scale", {*b.cd_scale}); !r) return r;
         if (!(*b.cd_scale > 0.0)) {
             return std::unexpected(invalid(what + ".cd_scale must be above 0, found " + format_double(*b.cd_scale)));
+        }
+    }
+    if (b.fit_kernel_cells) {
+        if (!b.alpha_0_deg) {
+            return std::unexpected(invalid(what + " has fit_kernel_cells without alpha_0_deg and cd_scale: the kernel is the polar's"));
+        }
+        if (Result<void> r = check_finite(what + ".fit_kernel_cells", {*b.fit_kernel_cells}); !r) return r;
+        if (!(*b.fit_kernel_cells >= 1.0 && *b.fit_kernel_cells <= 3.0)) {
+            return std::unexpected(invalid(what + ".fit_kernel_cells must be in [1, 3] (the line's kernel is), found " +
+                                           format_double(*b.fit_kernel_cells)));
         }
     }
     return {};
@@ -467,6 +480,7 @@ template <class Part>
             if (b.alpha_0_deg && b.cd_scale) {
                 out += "    alpha_0_deg: " + format_double(*b.alpha_0_deg) + "\n";
                 out += "    cd_scale: " + format_double(*b.cd_scale) + "\n";
+                if (b.fit_kernel_cells) out += "    fit_kernel_cells: " + format_double(*b.fit_kernel_cells) + "\n";
             }
         }
     }
@@ -643,7 +657,8 @@ struct Reader {
     Result<std::string> airfoil = string_field(node, "airfoil", what);
     if (!airfoil) return std::unexpected(airfoil.error());
     out.airfoil = std::move(*airfoil);
-    for (const auto& [key, slot] : {std::pair{"alpha_0_deg", &out.alpha_0_deg}, std::pair{"cd_scale", &out.cd_scale}}) {
+    for (const auto& [key, slot] : {std::pair{"alpha_0_deg", &out.alpha_0_deg}, std::pair{"cd_scale", &out.cd_scale},
+                                    std::pair{"fit_kernel_cells", &out.fit_kernel_cells}}) {
         if (!node[key].IsDefined()) continue;
         const Result<double> v = double_field(node, key, what);
         if (!v) return std::unexpected(v.error());

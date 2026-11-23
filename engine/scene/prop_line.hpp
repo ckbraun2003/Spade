@@ -22,6 +22,7 @@ struct LinePropeller {
     physics::airflow::BladeShape blade;
     physics::airflow::PolarTable polar;
     bool fitted = false;  // the polar's alpha_0 and drag scale are the part's fitted ones
+    float fit_kernel_cells = 0.0f;  // the kernel width in cells the part declares it was fitted at; 0 = none declared
 };
 
 [[nodiscard]] Result<LinePropeller> line_propeller(const PropPart& part);

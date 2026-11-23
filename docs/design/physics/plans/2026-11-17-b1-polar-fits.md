@@ -38,3 +38,5 @@ For the 10x5: H3/H4 (rpm), V3 (D 9.4 in, NASA). For the 9x4.5 and the Crazyflie:
 The D1 quad's stand-in blade with the MIT fit (7649 rpm, R/dx 19, 12 mm, flag off): line thrust 2.035 N, C_T 0.1895: the chain's
 k_T (C_T 0.120, 1.29 N at 801 rad/s) is not this blade's, so line rotors on D1 need the rpm (about 6090) or a thrust scale set from
 the line's own C_T; the fit does not remove that.
+
+Dated note, 2026-11-23: each fit holds only at the kernel width in cells it was made at; that width is now declared in the part file (`blade.fit_kernel_cells`, `docs/design/physics/records/2026-11-23-fit-kernel-declaration.md`: 2.93, 2.94, 2.83 and 2.55 cells) and a line runs the polar at it. The text above is unchanged; the grid transfer of a polar was measured only for the 5 x 4 at 3 cells, where a different polar fits the film (`2026-11-23-film-polar-fit.md`).
