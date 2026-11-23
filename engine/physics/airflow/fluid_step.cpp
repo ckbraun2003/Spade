@@ -177,19 +177,27 @@ std::string check_grid_note(const GridShape& shape, const DomainBc& bc) {
            "may miss its mark (each step's residual is announced)";
 }
 
-Result<void> check_grid(const GridShape& shape, const DomainBc& bc, bool with_solids, uint64_t) {
+Result<void> check_grid(const GridShape& shape, const DomainBc& bc, bool with_solids, uint64_t user_cap) {
     if (Result<void> ok = check_shape(shape, bc); !ok) return ok;
     if (Result<void> ok = check_domain(bc, shape); !ok) return ok;
     const uint64_t bytes = fluid_bytes(shape, bc) + (with_solids ? solid_bytes(shape, bc) : 0u);
-    if (bytes > kGridByteCap) {
+    const uint64_t cap = host_grid_cap(user_cap);
+    if (bytes > cap) {
         const char* what = with_solids ? " bytes of grid, scratch and solids" : " bytes of grid and scratch";
         return std::unexpected(Error{Code::capacity_exceeded, "airflow fluid step: " + std::to_string(bytes) + what +
-                                                                  ", past the cap of " + std::to_string(kGridByteCap)});
+                                                                  ", past the cap of " + std::to_string(cap) +
+                                                                  (cap < kGridByteCap ? " (lowered by the run from the stated " + std::to_string(kGridByteCap) + ")" : std::string())});
     }
     return {};
 }
 
+static Result<FluidScratch> make_fluid_scratch_body(const MacGrid& g, const DomainBc& bc, const FluidConfig& cfg);
 Result<FluidScratch> make_fluid_scratch(const MacGrid& g, const DomainBc& bc, const FluidConfig& cfg) {
+    return allocating<FluidScratch>("airflow fluid scratch (" + detail::shape_text(g.shape) + ")", fluid_bytes(g.shape, bc),
+                                    [&] { return make_fluid_scratch_body(g, bc, cfg); });
+}
+
+static Result<FluidScratch> make_fluid_scratch_body(const MacGrid& g, const DomainBc& bc, const FluidConfig& cfg) {
     const auto refuse = [](const char* what) {
         return std::unexpected(Error{Code::invalid_argument, std::string("airflow fluid step: ") + what});
     };
@@ -220,8 +228,16 @@ Result<FluidScratch> make_fluid_scratch(const MacGrid& g, const DomainBc& bc, co
     return s;
 }
 
+static Result<void> set_solids_body(FluidScratch& s, const MacGrid& g, const DomainBc& bc, std::span<const SolidPart> parts,
+                                    const SolidSampler& sample);
 Result<void> set_solids(FluidScratch& s, const MacGrid& g, const DomainBc& bc, std::span<const SolidPart> parts,
                         const SolidSampler& sample) {
+    return allocating<void>("airflow solids (" + detail::shape_text(g.shape) + ")", solid_bytes(g.shape, bc),
+                            [&] { return set_solids_body(s, g, bc, parts, sample); });
+}
+
+static Result<void> set_solids_body(FluidScratch& s, const MacGrid& g, const DomainBc& bc, std::span<const SolidPart> parts,
+                                    const SolidSampler& sample) {
     if (s.solids.theta[0].empty()) {
         // The grid's first solids: the cap with them, before any is allocated.
         if (Result<void> ok = check_grid(g.shape, bc, true); !ok) return ok;
@@ -243,7 +259,13 @@ Result<void> set_solids(FluidScratch& s, const MacGrid& g, const DomainBc& bc, s
     return attach_solid_field(s, g, bc, std::move(s.solids));
 }
 
+static Result<void> attach_solid_field_body(FluidScratch& s, const MacGrid& g, const DomainBc& bc, SolidField field);
 Result<void> attach_solid_field(FluidScratch& s, const MacGrid& g, const DomainBc& bc, SolidField field) {
+    return allocating<void>("airflow solids (" + detail::shape_text(g.shape) + ")", solid_bytes(g.shape, bc),
+                            [&] { return attach_solid_field_body(s, g, bc, std::move(field)); });
+}
+
+static Result<void> attach_solid_field_body(FluidScratch& s, const MacGrid& g, const DomainBc& bc, SolidField field) {
     if (Result<void> ok = check_grid(g.shape, bc, true); !ok) return ok;
     if (field.theta[0].size() != g.u.size() || field.theta[1].size() != g.v.size() ||
         field.theta[2].size() != g.w.size()) {
@@ -261,7 +283,13 @@ Result<void> attach_solid_field(FluidScratch& s, const MacGrid& g, const DomainB
     return {};
 }
 
+static Result<void> enable_dye_body(FluidScratch& s, const MacGrid& g);
 Result<void> enable_dye(FluidScratch& s, const MacGrid& g) {
+    const uint64_t cells = uint64_t{g.shape.nx} * g.shape.ny * g.shape.nz;
+    return allocating<void>("airflow dye (" + detail::shape_text(g.shape) + ")", cells * sizeof(float) * 3u, [&] { return enable_dye_body(s, g); });
+}
+
+static Result<void> enable_dye_body(FluidScratch& s, const MacGrid& g) {
     if (!s.dye.empty()) return std::unexpected(Error{Code::invalid_argument, "airflow dye: already enabled"});
     const std::size_t cells = std::size_t{g.shape.nx} * g.shape.ny * g.shape.nz;
     s.dye.assign(cells, 0.0f);

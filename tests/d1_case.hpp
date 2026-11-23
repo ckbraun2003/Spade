@@ -53,7 +53,7 @@ inline constexpr physics::airflow::GridShape kD1Grid{240, 177, 168, 0.004f};
 inline constexpr physics::airflow::GridShape kD1DeepGrid{240, 392, 168, 0.004f};
 
 // L86i, option A (the lead, 2026-11-17): the website's NASA-style look needs the blades' helices (pitch about 27 mm) resolved, so a uniform
-// 2 mm CROPPED near field: 0.544 x 0.464 x 0.544 m, 272 x 232 x 272 = 17.2 M cells. Two caps bound it, both measured on the phantom:
+// 2 mm CROPPED near field: 0.544 x 0.464 x 0.544 m, 272 x 232 x 272 = 17.2 M cells. Two caps bound it when this was chosen (both measured on the phantom, and both 4 GiB then; since O193 the host cap is the stated 16 GiB and the device's is the budget less the reserve):
 // kGridByteCap (4 GiB of grid, scratch and solids, 212 B a cell: 300 x 280 x 300 asked 5,341,050,984 bytes, 280 x 250 x 280 passes at
 // 3.870 GiB) and the device runner's VRAM cap (4 GiB with the staging, compute::vram_cap: 280 x 250 x 280 asked 4,307,788,776 on the device
 // plus 295,092,000 staging, 4,602,985,224 in all, 234.6 B a cell, and was refused; this box asks ~4.03 GB). The phantom's rotors (R 0.1194 m, at

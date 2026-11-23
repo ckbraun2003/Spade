@@ -3,6 +3,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <new>
+#include <stdexcept>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -105,25 +108,68 @@ void for_each_sample(const GridShape& s, uint32_t component, F&& f) {
             bc.face[kZMinus] == FaceBc::periodic};
 }
 
-// The largest grid make_grid() allocates: the spec's 4 GiB airflow cap (§4.3).
-inline constexpr uint64_t kGridByteCap = uint64_t{4} << 30;
+// THE HOST'S STATED GRID CAP: 16 GiB. A POLICY number, not a measurement (Oversight's nod, O193), changed only by the lead or Cameron. It is what a
+// CPU run and a case's validation hold a grid (with its scratch and solids) to, and it protects one thing: a case that cannot be run is refused BEFORE
+// any work starts, by name, instead of failing on an allocation in the middle of a run. It is the same on every machine and every run, never the
+// machine's free memory (which moves with whatever else is running), so a case file validates the same everywhere and a test that asserts a refusal
+// never flakes. A run may only LOWER it (host_grid_cap, check_grid's user_cap). A grid that passes it whose memory the machine cannot give fails at
+// allocation, by name (assign_zeroed: the grid and the bytes), never a crash. The device has its own, separate limit: the heap's budget less a reserve
+// (compute/device_limits.hpp, vram_cap), with no fixed ceiling. The cell-count check below (2^31) is unchanged: it protects the 32-bit index.
+inline constexpr uint64_t kGridByteCap = uint64_t{16} << 30;
 
-// RED stub (O193): the cap a run is held to when it asks to LOWER the host cap (0: not asked), and a zero-fill that refuses by name instead of throwing.
-[[nodiscard]] inline uint64_t host_grid_cap(uint64_t) noexcept { return kGridByteCap; }
-template <class Vec>
-[[nodiscard]] Result<void> assign_zeroed(Vec&, std::size_t, std::string_view) {
-    return {};
+// The cap a run is held to: the stated one, or `user_cap` when that is non-zero and lower. A run may only lower it.
+[[nodiscard]] inline uint64_t host_grid_cap(uint64_t user_cap) noexcept {
+    return (user_cap != 0 && user_cap < kGridByteCap) ? user_cap : kGridByteCap;
 }
 
-// RED stubs (O193, the lead: no CPU path may crash): the guard every Result-returning function that allocates runs its body in, and the test seam that
-// makes it act as the machine refusing any allocation over a limit.
+// The refusal for an allocation that failed (or, under ScopedAllocationLimit, would have): capacity_exceeded naming the stage, with the grid's shape, and the bytes.
+namespace detail {
+inline thread_local uint64_t g_allocation_limit = 0;  // the test seam: 0 is off
+[[nodiscard]] inline Error out_of_memory(std::string_view stage, uint64_t bytes) {
+    return Error{Code::capacity_exceeded, std::string(stage) + ": out of memory allocating " + std::to_string(bytes) + " bytes"};
+}
+[[nodiscard]] inline std::string shape_text(const GridShape& s) {
+    return std::to_string(s.nx) + " x " + std::to_string(s.ny) + " x " + std::to_string(s.nz);
+}
+}  // namespace detail
+
+// TEST SEAM: while one is alive on this thread, allocating() acts as a machine that refuses any allocation over `limit` bytes, so a test FORCES the
+// failure at every entry point and never relies on memory running out. Production code never makes one.
 class ScopedAllocationLimit {
 public:
-    explicit ScopedAllocationLimit(uint64_t) noexcept {}
+    explicit ScopedAllocationLimit(uint64_t limit) noexcept : previous_(detail::g_allocation_limit) { detail::g_allocation_limit = limit; }
+    ~ScopedAllocationLimit() { detail::g_allocation_limit = previous_; }
+    ScopedAllocationLimit(const ScopedAllocationLimit&) = delete;
+    ScopedAllocationLimit& operator=(const ScopedAllocationLimit&) = delete;
+
+private:
+    uint64_t previous_;
 };
+
+// THE GUARD (the lead's ruling, O193: no CPU path may crash): every Result-returning function that allocates runs its body in this. A std::bad_alloc or
+// std::length_error becomes capacity_exceeded naming `stage` (say what is being built and the grid's shape) and the `bytes` it was building; any other
+// exception goes through (a bug is not an out-of-memory).
 template <class T, class F>
-[[nodiscard]] Result<T> allocating(std::string_view, uint64_t, F&& body) {
-    return body();
+[[nodiscard]] Result<T> allocating(std::string_view stage, uint64_t bytes, F&& body) {
+    if (detail::g_allocation_limit != 0 && bytes > detail::g_allocation_limit) return std::unexpected(detail::out_of_memory(stage, bytes));
+    try {
+        return std::forward<F>(body)();
+    } catch (const std::bad_alloc&) {
+        return std::unexpected(detail::out_of_memory(stage, bytes));
+    } catch (const std::length_error&) {
+        return std::unexpected(detail::out_of_memory(stage, bytes));
+    }
+}
+
+// Fills `v` with `count` zeroes. A failed allocation is a refusal by allocating(), naming `what` (the grid and the array) and the bytes, and leaves `v` as it
+// was: never a throw out of a function that promises a Result (L6). A template over the vector so a test can force the failure with an allocator that
+// refuses past a limit.
+template <class Vec>
+[[nodiscard]] Result<void> assign_zeroed(Vec& v, std::size_t count, std::string_view what) {
+    return allocating<void>(what, uint64_t{count} * sizeof(typename Vec::value_type), [&]() -> Result<void> {
+        v.assign(count, typename Vec::value_type{});
+        return {};
+    });
 }
 
 // The bytes of a grid's u, v, w and p, in 64 bits, for a shape check_shape()

@@ -166,7 +166,7 @@ inline void spread_actuators(std::span<const ActuatorDisc> discs, const GridShap
 // refused capacity_exceeded naming the bytes and the cap. One rule for
 // make_grid(), make_fluid_scratch(), set_solids() and a scene's validator
 // (TD-9; the N5b agreement with Core); no allocation but a refusal's message.
-[[nodiscard]] Result<void> check_grid(const GridShape& shape, const DomainBc& bc, bool with_solids, uint64_t user_cap = 0);  // RED stub: user_cap ignored
+[[nodiscard]] Result<void> check_grid(const GridShape& shape, const DomainBc& bc, bool with_solids, uint64_t user_cap = 0);  // user_cap: a run may LOWER the host cap (host_grid_cap), never raise it
 
 // Refused, before anything is allocated:
 //   invalid_argument, naming the field: rho or h not positive and finite; nu
