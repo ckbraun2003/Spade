@@ -4,7 +4,7 @@
 // 0.29 m of wake below it), its rotors as actuator lines and the dye at the blade tips, on the device through LiveRun.
 //
 //   AirflowNearField.TheTwoMillimetreGridIsWithinTheCapWithItsSolids   check_grid(kD1NearGrid, the case's faces, with solids): measured
-//                                                                      bytes against kGridByteCap, printed; kGridByteCap is spec law
+//                                                                      bytes against kGridByteCap, printed; kGridByteCap is a stated policy number (O193)
 //   GpuLiveNearField.ThePhantomFliesOnTheTwoMillimetreNearField        opt-in SPADE_NEAR_FIELD=1 (GPU, minutes): LiveRun::start() on the
 //                                                                      grid with lines and dye, N steps (SPADE_NEAR_STEPS, 10): no
 //                                                                      fault, the air moves, the dye is in the frame; the device's
@@ -66,7 +66,9 @@ TEST(AirflowNearField, TheTwoMillimetreGridIsWithinTheCapWithItsSolids) {
                 static_cast<double>(fluid + solids) / kGiB, static_cast<double>(af::kGridByteCap) / kGiB);
     const auto ok = af::check_grid(grid, bc, true);
     EXPECT_TRUE(ok.has_value()) << (ok ? "" : ok.error().context);
-    EXPECT_EQ(af::kGridByteCap, uint64_t{4} << 30) << "the cap is spec law (the lead, 2026-11-17): a test does not move it";
+    // O193 (Cameron via Oversight, 2026-11-22): the fixed 4 GiB went and the host cap is the stated 16 GiB POLICY number, changed only by the lead or Cameron.
+    // This pin moves with that ruling, not on a test's say-so, and the grid below is still well inside it.
+    EXPECT_EQ(af::kGridByteCap, uint64_t{16} << 30) << "the host policy number is spec law (O193, Cameron 2026-11-22): only the lead or Cameron moves it; a test does not";
 }
 
 TEST(GpuLiveNearField, ThePhantomFliesOnTheTwoMillimetreNearField) {

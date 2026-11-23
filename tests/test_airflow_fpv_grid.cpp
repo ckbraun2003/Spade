@@ -56,7 +56,7 @@ TEST(AirflowFpvGrid, TheBoxIsRectangularAtOnePointTwoFiveMillimetresAndWithinThe
     const uint64_t solids = af::solid_bytes(kD1FpvGrid, bc);
     const double cells = static_cast<double>(kD1FpvGrid.nx) * kD1FpvGrid.ny * kD1FpvGrid.nz;
     std::printf("[ fpv     ] %ux%ux%u at 1.25 mm: %.1f M cells; fluid_bytes %.3f GiB, solid_bytes %.3f GiB, together %.3f GiB against the cap %.3f GiB; "
-                "the device runner's 234.6 B a cell: %.3f GiB of 4\n",
+                "the device runner's 234.6 B a cell: %.3f GiB of 6.75 (the 3060 Ti's budget less the 1 GiB reserve)\n",
                 kD1FpvGrid.nx, kD1FpvGrid.ny, kD1FpvGrid.nz, cells / 1.0e6, static_cast<double>(fluid) / kGiB, static_cast<double>(solids) / kGiB,
                 static_cast<double>(fluid + solids) / kGiB, static_cast<double>(af::kGridByteCap) / kGiB, cells * 234.6 / kGiB);
     const auto ok = af::check_grid(kD1FpvGrid, bc, true);
