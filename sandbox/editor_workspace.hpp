@@ -41,6 +41,7 @@
 #include "builtin_records.hpp"
 #include "core/error.hpp"
 #include "drone_view.hpp"
+#include "editor_shown_file.hpp"
 #include "editor_airflow.hpp"
 #include "editor_document.hpp"
 #include "editor_files.hpp"
@@ -502,7 +503,7 @@ class EditorWorkspace {
             ++panels_.library_generation;
             break;
         }
-        panels_.status = "saved '" + saved->name + "' to " + saved->file.generic_string() +
+        panels_.status = "saved '" + saved->name + "' to " + shown_file(saved->file, *dir) +
                          (saved->no_thumbnail.empty() ? std::string() : "; no thumbnail: " + saved->no_thumbnail);
     }
 
