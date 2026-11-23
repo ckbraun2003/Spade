@@ -1,4 +1,4 @@
-﻿Running main() from C:\Users\Cameron\Desktop\Projects\Spade\build-ninja\release\_deps\googletest-src\googletest\src\gtest_main.cc
+﻿Running main() from %USERPROFILE%\Desktop\Projects\Spade\build-ninja\release\_deps\googletest-src\googletest\src\gtest_main.cc
 Note: Google Test filter = Gpu*
 [==========] Running 84 tests from 11 test suites.
 [----------] Global test environment set-up.
@@ -95,7 +95,7 @@ denormal mode not requested
 [GpuFp32Math] MISMATCH Exp32LargestQuotientsAndSubnormalTail[6117565]  arg=0xC2AEAC5E (-87.3366547)  gpu=0x00000000 (0)  host=0x007FFC66 (1.17536515e-38)
 [GpuFp32Math] MISMATCH Exp32LargestQuotientsAndSubnormalTail[6117567]  arg=0xC2AEAC5F (-87.3366623)  gpu=0x00000000 (0)  host=0x007FFC26 (1.17535618e-38)
 [GpuFp32Math] Exp32LargestQuotientsAndSubnormalTail: n=10485762  mismatches=2180453  chunks=6
-C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_fp32_math.cpp(637): error: Expected equality of these values:
+%USERPROFILE%\Desktop\Projects\spade-wt\core\tests\test_gpu_fp32_math.cpp(637): error: Expected equality of these values:
   tally.mismatches
     Which is: 2180453
   0u
@@ -122,7 +122,7 @@ denormal mode not requested
 [GpuFp32Math] MISMATCH Exp32WholeFiniteDomainStrided[8740215]  arg=0xC2AEBB00 (-87.3652344)  gpu=0x00000000 (0)  host=0x007C6142 (1.14224911e-38)
 [GpuFp32Math] MISMATCH Exp32WholeFiniteDomainStrided[8740217]  arg=0xC2AEBC00 (-87.3671875)  gpu=0x00000000 (0)  host=0x007C2320 (1.1400202e-38)
 [GpuFp32Math] Exp32WholeFiniteDomainStrided: n=8757250  mismatches=8517  chunks=5
-C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_fp32_math.cpp(663): error: Expected equality of these values:
+%USERPROFILE%\Desktop\Projects\spade-wt\core\tests\test_gpu_fp32_math.cpp(663): error: Expected equality of these values:
   strided.mismatches
     Which is: 8517
   0u
@@ -146,7 +146,7 @@ C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_fp32_math.cpp(663
 [GpuFp32Math] MISMATCH Exp32UnderflowBoundary[14]  arg=0xC2CFE1C3 (-103.940941)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
 [GpuFp32Math] MISMATCH Exp32UnderflowBoundary[15]  arg=0xC2CFE1C4 (-103.940948)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
 [GpuFp32Math] Exp32UnderflowBoundary: n=8193  mismatches=4096  chunks=1
-C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_fp32_math.cpp(684): error: Expected equality of these values:
+%USERPROFILE%\Desktop\Projects\spade-wt\core\tests\test_gpu_fp32_math.cpp(684): error: Expected equality of these values:
   underflow.mismatches
     Which is: 4096
   0u
@@ -195,7 +195,7 @@ denormal mode not requested
 [GpuFp32Math] MISMATCH Exp32DeterministicLattice[149]  arg=0xC2CFF022 (-103.969009)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
 [GpuFp32Math] MISMATCH Exp32DeterministicLattice[150]  arg=0xC2CFF007 (-103.968803)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
 [GpuFp32Math] Exp32DeterministicLattice: n=1000001  mismatches=79978  chunks=1
-C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_fp32_math.cpp(838): error: Expected equality of these values:
+%USERPROFILE%\Desktop\Projects\spade-wt\core\tests\test_gpu_fp32_math.cpp(838): error: Expected equality of these values:
   lattice.mismatches
     Which is: 79978
   0u
@@ -211,7 +211,7 @@ denormal mode not requested
 [GpuFp32Math] MISMATCH Log32EdgeCases[11]  arg=0x007FFFFF (1.17549421e-38)  gpu=0xC2D15498 (-104.665222)  host=0xC2AEAC50 (-87.3365479)
 [GpuFp32Math] MISMATCH Log32EdgeCases[14]  arg=0x00400000 (5.87747175e-39)  gpu=0xC2D15498 (-104.665222)  host=0xC2B00F34 (-88.0296936)
 [GpuFp32Math] Log32EdgeCases: n=19  mismatches=5  chunks=1
-C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_fp32_math.cpp(892): error: Expected equality of these values:
+%USERPROFILE%\Desktop\Projects\spade-wt\core\tests\test_gpu_fp32_math.cpp(892): error: Expected equality of these values:
   log_tally.mismatches
     Which is: 5
   0u
@@ -225,7 +225,7 @@ C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_fp32_math.cpp(892
 [GpuFp32Math] MISMATCH Exp32EdgeCases[18]  arg=0xC2CE0000 (-103)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
 [GpuFp32Math] MISMATCH Exp32EdgeCases[19]  arg=0xC2CFCCCD (-103.900002)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
 [GpuFp32Math] Exp32EdgeCases: n=29  mismatches=7  chunks=1
-C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_fp32_math.cpp(909): error: Expected equality of these values:
+%USERPROFILE%\Desktop\Projects\spade-wt\core\tests\test_gpu_fp32_math.cpp(909): error: Expected equality of these values:
   exp_tally.mismatches
     Which is: 7
   0u
@@ -234,7 +234,7 @@ C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_fp32_math.cpp(909
 [GpuFp32Math] MISMATCH Sin32EdgeCases[27]  arg=0x00000001 (1.40129846e-45)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
 [GpuFp32Math] MISMATCH Sin32EdgeCases[28]  arg=0x80000001 (-1.40129846e-45)  gpu=0x00000000 (0)  host=0x80000001 (-1.40129846e-45)
 [GpuFp32Math] Sin32EdgeCases: n=29  mismatches=2  chunks=1
-C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_fp32_math.cpp(928): error: Expected equality of these values:
+%USERPROFILE%\Desktop\Projects\spade-wt\core\tests\test_gpu_fp32_math.cpp(928): error: Expected equality of these values:
   sin_tally.mismatches
     Which is: 2
   0u
@@ -323,7 +323,7 @@ gnss_sensors   noise.cached          1  0.00000000e+00  0.00000000e+00   0.00000
 gnss_sensors   bias                  1  5.96046448e-08  6.82732804e-08   0.00000000e+00  0.00000000e+00   OUTSIDE
     worst: element 0 component 0  cpu=8.730303645e-01 gpu=8.730303049e-01  (1 elements outside)
 
-C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(492): error: Value of: q.within_band()
+%USERPROFILE%\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(492): error: Value of: q.within_band()
   Actual: false
 Expected: true
 gnss_bias_discriminator (tau=1e-6, retention underflowed to zero): 'bias' is outside its pinned band -- measured max |abs| 5.9604644775390625e-08, max rel 6.8273280362518562e-08, pinned (0, 0); 1 of 1 elements
@@ -399,7 +399,7 @@ dryden         stream.cached         4  5.96046448e-08  6.95424234e-08   4.99999
 dryden         stream.flag           4  0 (exact)       n/a              bit-exact       n/a              within
 dryden         filter_state          4  1.19209290e-07  2.38535932e-07   1.99999999e-06  5.99999985e-05   within
 
-C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(492): error: Value of: q.within_band()
+%USERPROFILE%\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(492): error: Value of: q.within_band()
   Actual: false
 Expected: true
 gate_fleet (4 worlds x 900 steps, SDF union: plane + torus + 2 boxes): 'pos' is outside its pinned band -- measured max |abs| 3.2037496566772461e-06, max rel 6.4406565797980875e-05, pinned (1.9999999949504854e-06, 9.9999997473787516e-06); 1 of 20 elements
@@ -446,12 +446,12 @@ dryden         stream.cached         2  0.00000000e+00  0.00000000e+00   4.99999
 dryden         stream.flag           2  0 (exact)       n/a              bit-exact       n/a              within
 dryden         filter_state          2  4.76837158e-07  2.12123311e-07   1.99999999e-06  5.99999985e-05   within
 
-C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(492): error: Value of: q.within_band()
+%USERPROFILE%\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(492): error: Value of: q.within_band()
   Actual: false
 Expected: true
 two_world_isolation (2 overlapping worlds x 300 steps x 2 substeps, per-world gusts): 'pos' is outside its pinned band -- measured max |abs| 8.9406967163085938e-08, max rel 7.6416233696363633e-07, pinned (0, 0); 8 of 32 elements
 
-C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(492): error: Value of: q.within_band()
+%USERPROFILE%\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(492): error: Value of: q.within_band()
   Actual: false
 Expected: true
 two_world_isolation (2 overlapping worlds x 300 steps x 2 substeps, per-world gusts): 'vel' is outside its pinned band -- measured max |abs| 2.7939677238464355e-09, max rel 428633105629184, pinned (5.0000001362260058e-28, 0.00019999999494757503); 8 of 32 elements
@@ -549,7 +549,7 @@ dryden         stream.cached         1  0.00000000e+00  0.00000000e+00   4.99999
 dryden         stream.flag           1  0 (exact)       n/a              bit-exact       n/a              within
 dryden         filter_state          1  1.19209290e-07  1.48098025e-07   1.99999999e-06  5.99999985e-05   within
 
-C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(492): error: Value of: q.within_band()
+%USERPROFILE%\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(492): error: Value of: q.within_band()
   Actual: false
 Expected: true
 contact_pair (2 overlapping bodies, unequal masses, 600 steps): 'vel' is outside its pinned band -- measured max |abs| 9.5367431640625e-07, max rel 6.0950702618356445e-07, pinned (0, 0); 2 of 5 elements
@@ -612,12 +612,12 @@ dryden         stream.cached         2  0.00000000e+00  0.00000000e+00   4.99999
 dryden         stream.flag           2  0 (exact)       n/a              bit-exact       n/a              within
 dryden         filter_state          2  2.38418579e-07  6.00942315e-07   1.99999999e-06  5.99999985e-05   within
 
-C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(2010): error: Value of: q.within_band()
+%USERPROFILE%\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(2010): error: Value of: q.within_band()
   Actual: false
 Expected: true
 restore_resume: 'pos' is outside its pinned band -- measured max |abs| 4.76837158203125e-07, max rel 0.0096510425209999084, pinned (0, 0); 2 of 10 elements. A GROSS divergence here means the restore was discarded and the device stepped stale state.
 
-C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(2010): error: Value of: q.within_band()
+%USERPROFILE%\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(2010): error: Value of: q.within_band()
   Actual: false
 Expected: true
 restore_resume: 'vel' is outside its pinned band -- measured max |abs| 1.6689300537109375e-06, max rel 8.1427688201074488e-06, pinned (1.0000000116860974e-07, 0); 2 of 10 elements. A GROSS divergence here means the restore was discarded and the device stepped stale state.
@@ -644,12 +644,12 @@ dryden         stream.cached         2  0.00000000e+00  0.00000000e+00   4.99999
 dryden         stream.flag           2  0 (exact)       n/a              bit-exact       n/a              within
 dryden         filter_state          2  2.38418579e-07  2.02740523e-07   1.99999999e-06  5.99999985e-05   within
 
-C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(492): error: Value of: q.within_band()
+%USERPROFILE%\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(492): error: Value of: q.within_band()
   Actual: false
 Expected: true
 heterogeneous_geometry_set (2 worlds: empty-SDF ballistic + gate geometry, 900 steps): 'pos' is outside its pinned band -- measured max |abs| 1.3530254364013672e-05, max rel 0.0055044428445398808, pinned (1.9999999949504854e-06, 9.9999997473787516e-06); 1 of 2 elements
 
-C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(492): error: Value of: q.within_band()
+%USERPROFILE%\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(492): error: Value of: q.within_band()
   Actual: false
 Expected: true
 heterogeneous_geometry_set (2 worlds: empty-SDF ballistic + gate geometry, 900 steps): 'vel' is outside its pinned band -- measured max |abs| 4.4345855712890625e-05, max rel 0.004147862084209919, pinned (9.9999997473787516e-06, 9.9999997473787516e-06); 1 of 2 elements
@@ -877,12 +877,12 @@ dryden         stream.cached         2  0.00000000e+00  0.00000000e+00   4.99999
 dryden         stream.flag           2  0 (exact)       n/a              bit-exact       n/a              within
 dryden         filter_state          2  2.38418579e-07  6.00942315e-07   1.99999999e-06  5.99999985e-05   within
 
-C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_invariance.cpp(912): error: Value of: q.within_band()
+%USERPROFILE%\Desktop\Projects\spade-wt\core\tests\test_gpu_invariance.cpp(912): error: Value of: q.within_band()
   Actual: false
 Expected: true
 cpu->vulkan restore: 'pos' is outside its pinned band -- measured max |abs| 4.76837158203125e-07, max rel 0.0096510425209999084, pinned (0, 0); 2 of 10 elements
 
-C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_invariance.cpp(912): error: Value of: q.within_band()
+%USERPROFILE%\Desktop\Projects\spade-wt\core\tests\test_gpu_invariance.cpp(912): error: Value of: q.within_band()
   Actual: false
 Expected: true
 cpu->vulkan restore: 'vel' is outside its pinned band -- measured max |abs| 1.6689300537109375e-06, max rel 8.1427688201074488e-06, pinned (1.0000000116860974e-07, 0); 2 of 10 elements
@@ -911,12 +911,12 @@ dryden         stream.cached         2  0.00000000e+00  0.00000000e+00   4.99999
 dryden         stream.flag           2  0 (exact)       n/a              bit-exact       n/a              within
 dryden         filter_state          2  2.38418579e-07  6.00942656e-07   1.99999999e-06  5.99999985e-05   within
 
-C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_invariance.cpp(974): error: Value of: q.within_band()
+%USERPROFILE%\Desktop\Projects\spade-wt\core\tests\test_gpu_invariance.cpp(974): error: Value of: q.within_band()
   Actual: false
 Expected: true
 vulkan->cpu restore: 'pos' is outside its pinned band -- measured max |abs| 4.76837158203125e-07, max rel 0.0097450930625200272, pinned (0, 0); 2 of 10 elements
 
-C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_invariance.cpp(974): error: Value of: q.within_band()
+%USERPROFILE%\Desktop\Projects\spade-wt\core\tests\test_gpu_invariance.cpp(974): error: Value of: q.within_band()
   Actual: false
 Expected: true
 vulkan->cpu restore: 'vel' is outside its pinned band -- measured max |abs| 1.6689300537109375e-06, max rel 1, pinned (1.0000000116860974e-07, 0); 2 of 10 elements

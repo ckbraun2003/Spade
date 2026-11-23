@@ -186,3 +186,5 @@ The plan asks for this list when M2 is not green.
 - The plan expects M2 to give "the quantity, element and bits" of each failure. For the parity tests the harness gives only the final tick's worst element, so M3 needed the port.
 - `parity.hpp`'s two_world_isolation note says "the world SDF is empty". The world file has a ground plane, and the bodies rest on it, at the heights the logged CPU values give (about 0.12 m and 0.36 m). That note is Test/Docs' and Physics' to correct.
 - `CORE-3`'s reason for refusing tightening holds for the native `sqrt` only. Option 5 is the case it did not consider.
+
+**Note, 2026-11-23, under L-S34 (no tracked file holds the host's user folder path):** the raw output `data/2026-10-04-nvidia-denorm-m2.log` had the user-folder prefix of its 21 file-path lines forward-redacted to `%USERPROFILE%`. Only that text changed: every path below the prefix, every number and every other line is as recorded, and putting the prefix back reproduces the original log byte for byte (line endings aside). No history was rewritten.
