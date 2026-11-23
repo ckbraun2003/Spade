@@ -2,7 +2,7 @@
 // test_x500_contact_model.cpp -- O140 phase 1 item 4 + O150 video #2: the X500 standing on its twelve foot points as a MODEL FILE the editor loads.
 //
 // tests/test_x500_ground_contact.cpp builds the hull in memory from tools/flow_movie/data/x500/x500.model.yaml. That file is model_version 1 (no `collision:` key) and the
-// posted film pins it, so it is not changed. This test writes and pins its sibling, tools/flow_movie/data/x500/x500_contact.model.yaml (model_version 2, the version that
+// posted film pins it, so it is not changed. This test writes and pins its sibling, assets/models/x500_contact.model.yaml (an installed asset since 2026-11-23: model_version 2, the version that
 // reads `collision:`): the same model, named x500_contact, with the hull of tests/x500_contact_hull.hpp as its shape. The Library panel's "Load from file" and a scene file read
 // it through scene::load_model_file, and compose()/instantiate() add the rigid_contact module because a model has a shape, so nothing in engine/ or sandbox/ changes.
 //

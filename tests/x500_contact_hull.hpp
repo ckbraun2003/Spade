@@ -2,7 +2,7 @@
 
 // x500_contact_hull.hpp -- the X500's feet as a contact hull, in one place (O140 phase 1, item 4: docs/design/physics/plans/2026-11-21-ground-contact.md; O150 video
 // #2). tests/test_x500_ground_contact.cpp builds the model with it in memory; tests/test_x500_contact_model.cpp writes it into
-// tools/flow_movie/data/x500/x500_contact.model.yaml. Two copies of these numbers would be two places to be wrong.
+// assets/models/x500_contact.model.yaml. Two copies of these numbers would be two places to be wrong.
 //
 // THE FEET. Four rubber pads (the build table's JIAO-EVA objects, measured in the design frame: centres (+-0.0675, -0.2058, +-0.12) m, 93 x 19 x 19 mm), three points
 // a pad (both ends and the middle, so a pad cannot rest on a point pair), a skin radius of 9.5 mm: twelve points, the lowest of the drone at y = -0.2153 m in the design

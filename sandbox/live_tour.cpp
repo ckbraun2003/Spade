@@ -1386,7 +1386,7 @@ void editor_tour(Tour& t, const fs::path& assets) {
     });
 
     // Video #2 (O150): the X500 on its feet. Physics' x500_contact.model.yaml (the airframe on its twelve foot points) is loaded the way a user loads
-    // it (Load from file, from a copy in this run's work folder: assets/ gains nothing), placed by the editor at its rest height, then lifted 0.10 m through
+    // it (Load from file, from a copy in this run's work folder, so the editor never touches assets/models; the file is installed with the editor), placed by the editor at its rest height, then lifted 0.10 m through
     // the inspector's start position, dropped (Run) and watched until it is still. The same drop is replayed at 0.25x, labelled so. What is checked, in mm and
     // s: the gap between its lowest foot point and the floor, at placement, lifted and settled; the time to stillness. What the contact does (bounce or damp) is
     // shown as it is; the foot springs are Physics' tuned values.
@@ -1394,8 +1394,7 @@ void editor_tour(Tour& t, const fs::path& assets) {
         if (!open()) return;
         std::error_code ec;
         const fs::path model_file = work / "x500_contact.model.yaml";
-        fs::copy_file(assets.parent_path() / "tools" / "flow_movie" / "data" / "x500" / "x500_contact.model.yaml", model_file,
-                      fs::copy_options::overwrite_existing, ec);
+        fs::copy_file(assets / "models" / "x500_contact.model.yaml", model_file, fs::copy_options::overwrite_existing, ec);
         if (!s.check(!ec, "copy", ec ? ec.message() : "x500_contact.model.yaml copied into the work copy")) return;
         w().panels().item_path = model_file.string();
         command(editor::Command::load_item);
