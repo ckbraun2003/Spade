@@ -15,7 +15,7 @@
     THE REAL setup.exe IS BUILT FROM A GATED master SHA, so a tree with modified tracked files is refused. -AllowDirty is for
     the install test on a working tree: the file is named ...-dirty-setup.exe and is not a release.
 
-    Run it in the foreground. Under the job queue: python C:/Users/Cameron/Desktop/Vantage/vantage.py job run --class build ... -- powershell -File scripts\package.ps1
+    Run it in the foreground. Under the job queue: python <Vantage>/vantage.py job run --class build ... -- powershell -File scripts\package.ps1
 
 .PARAMETER GuideDir
     The user guide's site folder (index.html inside), from docs/user-guide/build.ps1 -Out <dir>. Default: <repo>\build-userguide\site.
