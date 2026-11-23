@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <limits>
 #include <string>
 #include <type_traits>
 
@@ -216,10 +217,38 @@ std::optional<size_t> max_payload_len(uint32_t msgid) {
     return d ? std::optional<size_t>(d->max_len) : std::nullopt;
 }
 
-// RED: the helpers are not written; they return an empty command.
-CommandLong command_arm(bool, uint8_t, uint8_t) { return CommandLong{}; }
-CommandLong command_takeoff(float, uint8_t, uint8_t) { return CommandLong{}; }
-CommandLong command_land(uint8_t, uint8_t) { return CommandLong{}; }
+namespace {
+constexpr uint16_t kCmdLand = 21;           // MAV_CMD_NAV_LAND
+constexpr uint16_t kCmdTakeoff = 22;        // MAV_CMD_NAV_TAKEOFF
+constexpr uint16_t kCmdArmDisarm = 400;     // MAV_CMD_COMPONENT_ARM_DISARM
+
+CommandLong addressed(uint16_t command, uint8_t target_system, uint8_t target_component) {
+    CommandLong c;
+    c.command = command;
+    c.target_system = target_system;
+    c.target_component = target_component;
+    return c;
+}
+}  // namespace
+
+CommandLong command_arm(bool arm, uint8_t target_system, uint8_t target_component) {
+    CommandLong c = addressed(kCmdArmDisarm, target_system, target_component);
+    c.param[0] = arm ? 1.0f : 0.0f;
+    return c;
+}
+
+CommandLong command_takeoff(float altitude_amsl_m, uint8_t target_system, uint8_t target_component) {
+    CommandLong c = addressed(kCmdTakeoff, target_system, target_component);
+    c.param[3] = c.param[4] = c.param[5] = std::numeric_limits<float>::quiet_NaN();  // yaw, latitude, longitude: unchanged, here
+    c.param[6] = altitude_amsl_m;
+    return c;
+}
+
+CommandLong command_land(uint8_t target_system, uint8_t target_component) {
+    CommandLong c = addressed(kCmdLand, target_system, target_component);
+    c.param[3] = c.param[4] = c.param[5] = std::numeric_limits<float>::quiet_NaN();  // yaw, latitude, longitude: here
+    return c;
+}
 
 uint32_t msgid_of(const Message& m) {
     return std::visit(
