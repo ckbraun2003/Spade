@@ -72,6 +72,7 @@
 #include "render/sprites.hpp"      // WorldSprite, RenderScene::sprites
 #include "render/flow_lines.hpp"   // FlowPolyline, FlowPoints, RenderScene::flow_polylines
 #include "render/flow_field.hpp"   // FlowSurfaceColouring, RenderScene::flow_surface_colouring
+#include "render/planar_texture.hpp"  // PlanarTexture, RenderScene::planar_texture
 #include "render/shadow.hpp"   // ShadowMap (S7a Task R7) -- forward-declares RenderScene itself, no cycle
 #include "render/target.hpp"   // Aabb, kNoMaterial, kNoMesh (Task 0) -- do not redeclare
 #include "world/builder.hpp"   // WorldDesc
@@ -568,6 +569,9 @@ struct DrawItem {
     //   * a flow volume composites over a see-through item even when the item is nearer (known limit).
     bool see_through = false;
 
+    // SP-4: this item's colour is the scene's planar texture sampled at each pixel's world position (RenderScene::planar_texture), lit as a white material. False draws its material, as before.
+    bool planar_textured = false;
+
     // Whether the sun's shadow maps take this item's triangles as occluders. True, the default, is every item there
     // was: no existing frame moves. The geo terrain (render/terrain.hpp) sets it false: it receives the drone's shadow
     // and casts none. A see-through item never casts, whatever this says (RND-11).
@@ -664,6 +668,8 @@ struct RenderScene {
     // raster modes apply it after the meshes and CSG, and GL in their passes;
     // the ray-march mode does not. Unset unless a caller sets it.
     std::optional<FlowSurfaceColouring> flow_surface_colouring;
+    // SP-4: the image the items with planar_textured draw (render/planar_texture.hpp). render() refuses a malformed one, and an item that asks for it when there is none.
+    std::optional<PlanarTexture> planar_texture;
     // CSG subtrees, which shaded and velocity modes ray-march per pixel
     // within their bounds (RS3). Empty for a hand-built RenderScene; only
     // scene_from_world() fills it, one entry per CSG root.

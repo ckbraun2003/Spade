@@ -273,6 +273,7 @@ add_executable(spade_tests
     test_render_see_through.cpp
     test_shadow_focus_fit.cpp
     test_render_terrain.cpp
+    test_render_planar_texture.cpp
     test_render_flow_feed.cpp
     test_render_flow_field.cpp
     test_render_solid_drone.cpp

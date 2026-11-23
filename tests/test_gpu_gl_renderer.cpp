@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <thread>
 #include <cmath>
@@ -51,8 +52,11 @@
 #include "render/raster_cpu.hpp"
 #include "render/scene.hpp"
 #include "render/sprite_kit.hpp"
+#include "render/planar_texture.hpp"
 #include "render/shadow.hpp"
 #include "render/target.hpp"
+#include "render/terrain.hpp"
+#include "world/terrain_input.hpp"
 #include "render/tessellate.hpp"
 #include "world/sdf.hpp"
 #include "world/builder.hpp"
@@ -5429,6 +5433,194 @@ TEST_F(GpuGlRenderer, ASearchedThenExtrapolatedSurfaceColouringMatchesTheCpu) {
     const ChannelDiff band = channel_diff(cpu, gl);
     EXPECT_LE(band.worst, 1) << renderer_->renderer_name();
     EXPECT_EQ(band.over_two, 0u);
+}
+
+// The planar texture (SP-4 branch 3), on GL as on the CPU (tests/test_render_planar_texture.cpp is the CPU's): an image over the items that ask for it, mapped by
+// world position and lit as a white material. These are the GL-to-CPU band cases and the two the CPU side shares: nothing asking changes nothing, and a constant
+// image is the plain material's frame.
+namespace planar {
+
+[[nodiscard]] spade::render::PlanarTexture checker(uint32_t n, float half) {
+    spade::render::PlanarTexture t;
+    t.width = t.height = n;
+    for (uint32_t j = 0; j < n; ++j) {
+        for (uint32_t i = 0; i < n; ++i) {
+            const bool a = ((i + j) & 1u) == 0u;
+            t.rgb.push_back(a ? 230 : 30);
+            t.rgb.push_back(40);
+            t.rgb.push_back(a ? 40 : 230);
+        }
+    }
+    t.x_min = t.z_min = -half;
+    t.x_max = t.z_max = half;
+    return t;
+}
+
+// A quad at y = 0 over [-half, half]^2 facing up, as the item `textured` or not.
+[[nodiscard]] RenderScene quad_scene(float half, glm::vec4 base, bool textured) {
+    RenderScene scene;
+    scene.materials = {Material{.base_color = base}};
+    scene.lighting.sun_direction = glm::normalize(glm::vec3(0.4f, 0.8f, 0.6f));
+    spade::render::MeshData quad;
+    quad.positions = {glm::vec3(-half, 0.0f, -half), glm::vec3(-half, 0.0f, half), glm::vec3(half, 0.0f, -half), glm::vec3(half, 0.0f, half)};
+    quad.normals.assign(4, glm::vec3(0.0f, 1.0f, 0.0f));
+    quad.indices = {0, 1, 2, 2, 1, 3};
+    scene.meshes.push_back(quad);
+    DrawItem item{.mesh_index = 0, .local_to_world = glm::mat4(1.0f)};
+    item.planar_textured = textured;
+    scene.statics.push_back(item);
+    scene.bounds = spade::render::Aabb{.min = glm::vec3(-500.0f, -5.0f, -500.0f), .max = glm::vec3(500.0f, 50.0f, 500.0f)};
+    return scene;
+}
+
+[[nodiscard]] Camera oblique() {
+    Camera camera;
+    camera.position = glm::vec3(0.0f, 3.0f, 60.0f);
+    camera.orientation = glm::angleAxis(-0.18f, glm::vec3(1.0f, 0.0f, 0.0f));
+    return camera;
+}
+
+}  // namespace planar
+
+TEST_F(GpuGlRenderer, APlanarTexturedQuadSeenObliquelyMatchesTheCpuWithinItsBand) {
+    RenderScene scene = planar::quad_scene(100.0f, glm::vec4(0.5f, 0.5f, 0.5f, 1.0f), true);
+    scene.planar_texture = planar::checker(16, 100.0f);
+    const std::vector<uint8_t> gl = draw_and_read(scene, comparable_options(), planar::oblique());
+    const std::vector<uint8_t> cpu = cpu_rgba(scene, planar::oblique(), comparable_options());
+    ASSERT_EQ(gl.size(), kPixels * 4u);
+    RenderScene flat = planar::quad_scene(100.0f, glm::vec4(0.5f, 0.5f, 0.5f, 1.0f), false);
+    EXPECT_GT(channel_diff(cpu, cpu_rgba(flat, planar::oblique(), comparable_options())).differing, kPixels / 10u) << "the texture is in the CPU frame at all";
+    const ChannelDiff band = channel_diff(cpu, gl);
+    EXPECT_LE(band.worst, 2) << renderer_->renderer_name();
+    EXPECT_LE(band.over_two, kPixels / 200u) << "the quad's edge pixels only";
+}
+
+TEST_F(GpuGlRenderer, AConstantPlanarTextureDrawsThePlainMaterialsFrameOnGl) {
+    RenderScene plain = planar::quad_scene(10.0f, glm::vec4(0.8f, 0.5f, 0.2f, 1.0f), false);
+    RenderScene textured = planar::quad_scene(10.0f, glm::vec4(0.1f, 0.9f, 0.9f, 1.0f), true);  // its own colour is not drawn
+    spade::render::PlanarTexture t;
+    t.width = t.height = 4;
+    for (int i = 0; i < 16; ++i) {
+        t.rgb.insert(t.rgb.end(), {204, 128, 51});
+    }
+    t.x_min = t.z_min = -10.0f;
+    t.x_max = t.z_max = 10.0f;
+    textured.planar_texture = t;
+    Camera camera;
+    camera.position = glm::vec3(0.0f, 20.0f, 0.0f);
+    camera.orientation = glm::angleAxis(-1.5707963267948966f, glm::vec3(1.0f, 0.0f, 0.0f));
+    const ChannelDiff band = channel_diff(draw_and_read(plain, comparable_options(), camera), draw_and_read(textured, comparable_options(), camera));
+    EXPECT_LE(band.worst, 1) << renderer_->renderer_name();
+}
+
+TEST_F(GpuGlRenderer, ATexturePresentThatNoItemAsksForChangesNothingOnGl) {
+    RenderScene without = planar::quad_scene(10.0f, glm::vec4(0.8f, 0.5f, 0.2f, 1.0f), false);
+    RenderScene with = without;
+    with.planar_texture = planar::checker(8, 10.0f);
+    Camera camera;
+    camera.position = glm::vec3(0.0f, 20.0f, 0.0f);
+    camera.orientation = glm::angleAxis(-1.5707963267948966f, glm::vec3(1.0f, 0.0f, 0.0f));
+    EXPECT_EQ(count_differing(draw_and_read(without, comparable_options(), camera), draw_and_read(with, comparable_options(), camera)), 0u);
+}
+
+// attach_terrain with the image, on GL: the quadrants' colours land with north up (GL's frame is bottom row first).
+TEST_F(GpuGlRenderer, ATexturedTerrainDrawsItsImageNorthUpOnGl) {
+    spade::world::TerrainInput map;
+    map.nx = 20;
+    map.ny = 20;
+    map.extent = {-10.0, 10.0, -10.0, 10.0};
+    map.heights.assign(20u * 20u, 0.0f);
+    map.image.width = 2;
+    map.image.height = 2;
+    map.image.rgb = {255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0};  // north row: red, green; south row: blue, yellow
+    RenderScene scene;
+    scene.materials = {Material{}};
+    scene.lighting.sun_direction = glm::normalize(glm::vec3(0.4f, 0.8f, 0.6f));
+    scene.bounds = spade::render::Aabb{.min = glm::vec3(-60.0f, -5.0f, -60.0f), .max = glm::vec3(60.0f, 5.0f, 60.0f)};
+    spade::render::TerrainSpec spec;
+    spec.textured = true;
+    ASSERT_TRUE(spade::render::attach_terrain(scene, map, spec).has_value());
+    Camera camera;
+    camera.position = glm::vec3(0.0f, 20.0f, 0.0f);
+    camera.orientation = glm::angleAxis(-1.5707963267948966f, glm::vec3(1.0f, 0.0f, 0.0f));
+    const std::vector<uint8_t> gl = draw_and_read(scene, comparable_options(), camera);
+    ASSERT_EQ(gl.size(), kPixels * 4u);
+    const auto at = [&](int px, int py_from_top) {
+        const size_t i = (static_cast<size_t>(kHeight - 1 - py_from_top) * kWidth + static_cast<size_t>(px)) * 4u;
+        return std::array<int, 3>{gl[i], gl[i + 1], gl[i + 2]};
+    };
+    const auto nw = at(54, 34), ne = at(106, 34), sw = at(54, 86), se = at(106, 86);
+    EXPECT_TRUE(nw[0] > 120 && nw[1] < 40 && nw[2] < 40) << "north-west: red";
+    EXPECT_TRUE(ne[1] > 120 && ne[0] < 40 && ne[2] < 40) << "north-east: green";
+    EXPECT_TRUE(sw[2] > 120 && sw[0] < 40 && sw[1] < 40) << "south-west: blue";
+    EXPECT_TRUE(se[0] > 120 && se[1] > 120 && se[2] < 40) << "south-east: yellow";
+}
+
+// A flat-coloured terrain with a slope under it (heights vary, so the shading does), used by both pins below. `set_flat` asks for the flat colour wherever the spec has the flag (a spec before the
+// planar texture has none and is flat already), so the same text pins the frame before and after the texture was added.
+namespace flat_pin {
+
+template <typename Spec>
+void set_flat(Spec& spec) {
+    if constexpr (requires { spec.textured; }) spec.textured = false;
+}
+
+[[nodiscard]] spade::world::TerrainInput map() {
+    spade::world::TerrainInput m;
+    m.nx = 24;
+    m.ny = 24;
+    m.extent = {-30.0, 30.0, -30.0, 30.0};
+    m.heights.resize(24u * 24u);
+    for (uint32_t j = 0; j < 24u; ++j) {
+        for (uint32_t i = 0; i < 24u; ++i) {
+            const double east = -30.0 + (i + 0.5) * 60.0 / 24.0;
+            const double north = 30.0 - (j + 0.5) * 60.0 / 24.0;
+            m.heights[static_cast<size_t>(j) * 24u + i] = static_cast<float>(0.08 * east + 0.05 * north + 1.5 * std::sin(0.3 * east) * std::cos(0.2 * north));
+        }
+    }
+    m.image.width = 2;
+    m.image.height = 2;
+    m.image.rgb.assign(12u, 200u);
+    return m;
+}
+
+[[nodiscard]] spade::render::RenderScene scene() {
+    spade::render::RenderScene s;
+    s.materials = {spade::render::Material{}};
+    s.bounds = {glm::vec3(-120.0f, -20.0f, -120.0f), glm::vec3(120.0f, 40.0f, 120.0f)};
+    s.lighting.sun_direction = glm::normalize(glm::vec3(0.4f, 0.8f, 0.6f));
+    spade::render::TerrainSpec spec;
+    spec.base_color = glm::vec3(0.55f, 0.62f, 0.35f);
+    set_flat(spec);
+    const auto attached = spade::render::attach_terrain(s, map(), spec);
+    if (!attached) ADD_FAILURE() << attached.error().context;
+    return s;
+}
+
+[[nodiscard]] spade::render::Camera camera() {
+    spade::render::Camera c;
+    c.position = glm::vec3(4.0f, 14.0f, 40.0f);
+    c.orientation = glm::angleAxis(-0.42f, glm::vec3(1.0f, 0.0f, 0.0f));
+    return c;
+}
+
+// FNV-1a over the frame's bytes.
+[[nodiscard]] uint64_t digest(const std::vector<uint8_t>& bytes) {
+    uint64_t h = 1469598103934665603ull;
+    for (const uint8_t b : bytes) h = (h ^ b) * 1099511628211ull;
+    return h;
+}
+
+}  // namespace flat_pin
+
+// The same flat terrain on GL, pinned the same way: the digest of GL's frame on the card the gate runs on, taken from the build WITHOUT the texture. A different driver may round differently; the
+// CPU pin is the portable one, this is the check that the GL shader's new branch leaves a flat terrain alone.
+TEST_F(GpuGlRenderer, TheFlatTerrainsGlFrameIsTheOneBeforeTheTexture) {
+    const RenderScene scene = flat_pin::scene();
+    const std::vector<uint8_t> gl = draw_and_read(scene, comparable_options(), flat_pin::camera());
+    ASSERT_EQ(gl.size(), kPixels * 4u);
+    EXPECT_GT(count_non_black(gl), kPixels / 5u) << "the terrain is in the frame";
+    EXPECT_EQ(flat_pin::digest(gl), UINT64_C(16726099002277015038)) << renderer_->renderer_name() << ": the flat terrain's GL frame changed";
 }
 
 // The no-search extrapolation on GL as on the CPU (O158): p = 0.8 z, no solid, the wall's value 0; GL's frame is the CPU's within one level.

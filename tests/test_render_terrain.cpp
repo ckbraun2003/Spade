@@ -460,6 +460,7 @@ TEST(TerrainGround, InAFrameTheFloorNeverShowsThroughTheMap) {
     scene.materials.push_back(Material{glm::vec4(0.1f, 0.1f, 0.9f, 1.0f), 0u});  // the floor: blue
     add_floor(scene, 0.0f, 1u);
     TerrainSpec spec;
+    spec.textured = false;                          // this case is about what is in front, so the map's own colour, not its image
     spec.base_color = glm::vec3(0.9f, 0.1f, 0.1f);  // the map: red
     // Every height is under the floor, so a floor left at y = 0 would hide the whole map.
     ASSERT_TRUE(spade::render::attach_terrain(scene, make_map(40, 40, -20.0, 20.0, -20.0, 20.0, bowl), spec).has_value());
@@ -475,4 +476,76 @@ TEST(TerrainGround, InAFrameTheFloorNeverShowsThroughTheMap) {
     }
     EXPECT_EQ(blue, 0u) << "the floor shows through the map";
     EXPECT_GT(red, frame.size() * 9 / 10) << "the map should fill the frame (winding, culling)";
+}
+
+// A flat-coloured terrain with a slope under it (heights vary, so the shading does), used by both pins below. `set_flat` asks for the flat colour wherever the spec has the flag (a spec before the
+// planar texture has none and is flat already), so the same text pins the frame before and after the texture was added.
+namespace flat_pin {
+
+template <typename Spec>
+void set_flat(Spec& spec) {
+    if constexpr (requires { spec.textured; }) spec.textured = false;
+}
+
+[[nodiscard]] spade::world::TerrainInput map() {
+    spade::world::TerrainInput m;
+    m.nx = 24;
+    m.ny = 24;
+    m.extent = {-30.0, 30.0, -30.0, 30.0};
+    m.heights.resize(24u * 24u);
+    for (uint32_t j = 0; j < 24u; ++j) {
+        for (uint32_t i = 0; i < 24u; ++i) {
+            const double east = -30.0 + (i + 0.5) * 60.0 / 24.0;
+            const double north = 30.0 - (j + 0.5) * 60.0 / 24.0;
+            m.heights[static_cast<size_t>(j) * 24u + i] = static_cast<float>(0.08 * east + 0.05 * north + 1.5 * std::sin(0.3 * east) * std::cos(0.2 * north));
+        }
+    }
+    m.image.width = 2;
+    m.image.height = 2;
+    m.image.rgb.assign(12u, 200u);
+    return m;
+}
+
+[[nodiscard]] spade::render::RenderScene scene() {
+    spade::render::RenderScene s;
+    s.materials = {spade::render::Material{}};
+    s.bounds = {glm::vec3(-120.0f, -20.0f, -120.0f), glm::vec3(120.0f, 40.0f, 120.0f)};
+    s.lighting.sun_direction = glm::normalize(glm::vec3(0.4f, 0.8f, 0.6f));
+    spade::render::TerrainSpec spec;
+    spec.base_color = glm::vec3(0.55f, 0.62f, 0.35f);
+    set_flat(spec);
+    const auto attached = spade::render::attach_terrain(s, map(), spec);
+    if (!attached) ADD_FAILURE() << attached.error().context;
+    return s;
+}
+
+[[nodiscard]] spade::render::Camera camera() {
+    spade::render::Camera c;
+    c.position = glm::vec3(4.0f, 14.0f, 40.0f);
+    c.orientation = glm::angleAxis(-0.42f, glm::vec3(1.0f, 0.0f, 0.0f));
+    return c;
+}
+
+// FNV-1a over the frame's bytes.
+[[nodiscard]] uint64_t digest(const std::vector<uint8_t>& bytes) {
+    uint64_t h = 1469598103934665603ull;
+    for (const uint8_t b : bytes) h = (h ^ b) * 1099511628211ull;
+    return h;
+}
+
+}  // namespace flat_pin
+
+// The flat terrain's frame, pinned (SP-4 branch 3): asking for the flat colour draws what a terrain drew before the planar texture existed, bit for bit. The digest is of the CPU frame's bytes and
+// was taken from the build WITHOUT the texture (master at 267efc11 plus the same test), so a change to it is a change to the terrain's flat frame.
+TEST(TerrainFlatPin, TheFlatTerrainsCpuFrameIsTheOneBeforeTheTexture) {
+    const RenderScene scene = flat_pin::scene();
+    std::vector<uint8_t> storage(static_cast<size_t>(kW) * kH * 4u, 0u);
+    RenderTarget target{.pixels = std::span<uint8_t>(storage), .width = kW, .height = kH, .stride = kW * 4u, .format = PixelFormat::bgrx8};
+    RenderOptions options;
+    options.overlays = false;
+    ASSERT_TRUE(spade::render::render(scene, flat_pin::camera(), options, target).has_value());
+    size_t lit = 0;
+    for (size_t p = 0; p < static_cast<size_t>(kW) * kH; ++p) lit += storage[p * 4u + 1u] > 60u ? 1u : 0u;
+    EXPECT_GT(lit, static_cast<size_t>(kW) * kH / 5u) << "the terrain is in the frame";
+    EXPECT_EQ(flat_pin::digest(storage), UINT64_C(10244493917575481993)) << "the flat terrain's frame changed";
 }

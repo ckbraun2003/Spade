@@ -175,6 +175,19 @@ Result<TerrainStats> attach_terrain(RenderScene& scene, const world::TerrainInpu
                                      .material_override = material,
                                      .object_label = intern_label(scene, "terrain"),
                                      .casts_shadow = false});
+    if (spec.textured) {
+        // The image's outer edges are the map's extent; z = -north, so row 0 (the north edge) is at z_min.
+        PlanarTexture texture;
+        texture.width = map.image.width;
+        texture.height = map.image.height;
+        texture.rgb = map.image.rgb;
+        texture.x_min = static_cast<float>(map.extent.east_min);
+        texture.x_max = static_cast<float>(map.extent.east_max);
+        texture.z_min = static_cast<float>(-map.extent.north_max);
+        texture.z_max = static_cast<float>(-map.extent.north_min);
+        scene.planar_texture = std::move(texture);
+        scene.statics.back().planar_textured = true;
+    }
 
     // The floor rule: the render copy of each floor under (or level with) the map's lowest vertex goes just below it.
     const float target = stats.lowest_y_m - kTerrainGroundMargin;

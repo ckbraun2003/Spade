@@ -694,7 +694,7 @@ void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const Scr
                                const glm::vec3& sun0, const glm::vec3& sun1, const glm::vec3& sun2,
                                const glm::vec3& wpos0, const glm::vec3& wpos1, const glm::vec3& wpos2,
                                const glm::vec3& receiver_normal, const ShadowSet* shadow,
-                               const AtmosphereContext& atmo) {
+                               const AtmosphereContext& atmo, const PlanarTexture* texture = nullptr) {
     const bool equal_combined = (combined0 == combined1 && combined1 == combined2);
     // ⚠⚠ `!atmo.active()` IS LOAD-BEARING, NOT DEFENSIVE. The flat fast path
     // paints ONE colour over the whole triangle, and it is only equivalent to
@@ -704,7 +704,7 @@ void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const Scr
     // term across every constant-normal triangle (which is most of them: a
     // plane, a box face, a wall). It would look like the feature simply did not
     // work on flat surfaces, with nothing red.
-    if (equal_combined && shadow == nullptr && !atmo.active() && fb.blend_alpha < 0.0f) {
+    if (equal_combined && shadow == nullptr && !atmo.active() && fb.blend_alpha < 0.0f && texture == nullptr) {
         rasterizeTriangleFlat(fb, v0, v1, v2, to_byte(combined0.r), to_byte(combined0.g), to_byte(combined0.b));
         return;
     }
@@ -765,7 +765,7 @@ void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const Scr
             // quantity is the shape SR-17 clause 4 exists to forbid, and it
             // would also double the per-pixel cost of the common case.
             glm::vec3 world(0.0f);
-            if (shadow != nullptr || atmo.active()) {
+            if (shadow != nullptr || atmo.active() || texture != nullptr) {
                 // SR-24: perspective-correct world position -- interpolate
                 // world*invDepth AFFINELY (the SAME b0/b1/b2 screen-space
                 // weights invD itself uses) and divide by the ALREADY
@@ -791,6 +791,11 @@ void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const Scr
                 // SR-25: ambient (already folded into `combined`) is never
                 // shadowed -- only the sun term is attenuated.
                 color = apply_shadow(ShadedColor{combined, sun}, lit);
+            }
+            if (texture != nullptr) {
+                // SP-4: the surface's albedo at this pixel's own world point (perspective-correct by the same recovery as the shadow's), multiplying the lighting that
+                // was computed for a white material -- after the shadow, before the haze, as a base colour would have.
+                color *= sample_planar_texture(*texture, world.x, world.z);
             }
             if (atmo.active()) {
                 // SR-17a: LAST, after shadowing. The atmosphere sits between
@@ -851,7 +856,7 @@ void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const Scr
 void draw_mesh_triangle_shaded(FrameBuffers& fb, const ViewContext& vc, const Vec3& a, const Vec3& b, const Vec3& c,
                                 const glm::vec3& na, const glm::vec3& nb, const glm::vec3& nc,
                                 const Material& material, const Lighting& lighting, const ShadowSet* shadow,
-                                const AtmosphereContext& atmo) {
+                                const AtmosphereContext& atmo, const PlanarTexture* texture = nullptr) {
     const ClipVertex ac{worldToCameraSpace(vc, a), na, vec3f(a)};
     const ClipVertex bc{worldToCameraSpace(vc, b), nb, vec3f(b)};
     const ClipVertex cc{worldToCameraSpace(vc, c), nc, vec3f(c)};
@@ -882,7 +887,7 @@ void draw_mesh_triangle_shaded(FrameBuffers& fb, const ViewContext& vc, const Ve
         const float across_len = glm::length(across);
         const glm::vec3 receiver_normal = across_len > 0.0f ? across / across_len : glm::vec3(0.0f);
         rasterizeTriangleGouraud(fb, sa, sb, sc, sca.combined, scb.combined, scc.combined, sca.sun, scb.sun, scc.sun,
-                                  poly[0].world, poly[i].world, poly[i + 1].world, receiver_normal, shadow, atmo);
+                                  poly[0].world, poly[i].world, poly[i + 1].world, receiver_normal, shadow, atmo, texture);
     }
 }
 
@@ -1070,6 +1075,11 @@ void draw_mesh_item(FrameBuffers& fb, const ViewContext& vc, const RenderScene& 
                 glm::vec4(velocity_ramp(item.speed_mps, options.velocity_scale_mps), 1.0f);
         }
         const Material& material = (mode == DrawMode::velocity) ? velocity_tinted : resolved;
+        // SP-4: an item that asks for the scene's planar texture is lit as a WHITE material and takes its albedo from the texture per pixel (shaded mode only; the others draw the material).
+        const PlanarTexture* texture = (mode == DrawMode::shaded && item.planar_textured && scene.planar_texture) ? &*scene.planar_texture : nullptr;
+        Material white_lit = material;
+        if (texture != nullptr) white_lit.base_color = glm::vec4(1.0f, 1.0f, 1.0f, material.base_color.a);
+        const Material& lit_material = texture != nullptr ? white_lit : material;
 
         // The see-through pass: this submesh's alpha, a NaN or negative one 0 (nothing to blend), above 1 clamped.
         // An alpha of 0 draws nothing at all.
@@ -1115,8 +1125,8 @@ void draw_mesh_item(FrameBuffers& fb, const ViewContext& vc, const RenderScene& 
                 if (is_sensor_mode(mode)) {
                     draw_mesh_triangle_sensor(fb, vc, vec3d(wa), vec3d(wb), vec3d(wc), na, nb, nc);
                 } else {
-                    draw_mesh_triangle_shaded(fb, vc, vec3d(wa), vec3d(wb), vec3d(wc), na, nb, nc, material,
-                                               scene.lighting, shadow, atmo);
+                    draw_mesh_triangle_shaded(fb, vc, vec3d(wa), vec3d(wb), vec3d(wc), na, nb, nc, lit_material,
+                                               scene.lighting, shadow, atmo, texture);
                 }
             }
         }
@@ -2386,6 +2396,19 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
     }
     if (const std::string why = flow_lines_gl_only_reason(scene.flow_polylines, scene.flow_line_style); !why.empty()) {
         return std::unexpected(Error{Code::invalid_argument, "render: " + why});
+    }
+    if (scene.planar_texture) {
+        if (Result<void> valid = validate_planar_texture(*scene.planar_texture); !valid) {
+            return std::unexpected(Error{valid.error().code, "render: " + valid.error().context});
+        }
+    }
+    for (const std::vector<DrawItem>* items : {&scene.statics, &scene.dynamics}) {
+        for (size_t i = 0; i < items->size(); ++i) {
+            if ((*items)[i].planar_textured && !scene.planar_texture) {
+                return std::unexpected(Error{Code::invalid_argument, std::string("render: ") + (items == &scene.statics ? "statics[" : "dynamics[") + std::to_string(i) +
+                                                                         "] asks for the planar texture, which the scene does not have"});
+            }
+        }
     }
     if (scene.flow_surface_colouring) {
         if (Result<void> valid = validate_flow_surface_colouring(*scene.flow_surface_colouring); !valid) {
