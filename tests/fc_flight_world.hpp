@@ -67,6 +67,11 @@ inline constexpr uint32_t kBaroBinding = 1, kMagBinding = 2, kGnssBinding = 3;
 inline constexpr float kBaroSigmaPa = 0.0f;
 inline constexpr float kMagSigmaUt = 0.0f;
 
+// The boot messages' noise for a flight run: Core's defaults, except the barometer's and magnetometer's sigmas, which are the world's (the same kit profile), so
+// the boot and the flight agree on how noisy those two sensors are. The accelerometer's and gyroscope's boot sigmas (0.02 m/s2, 0.002 rad/s) are Core's and stay.
+// RED: the stub returns the defaults.
+[[nodiscard]] inline spade::fc_host::BootConfig flight_boot_config() { return spade::fc_host::BootConfig{}; }
+
 [[nodiscard]] inline std::optional<FlightWorld> make_flight_world() {
     namespace x5 = spade::test::x500;
     auto loaded = spade::scene::load_model_file(std::filesystem::path(SPADE_REPO_DIR) / "tools/flow_movie/data/x500/x500.model.yaml");

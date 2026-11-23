@@ -165,6 +165,47 @@ TEST(FcLinkExchange, TheBootHoldsTheWorldAndTheHostIsToldHowLongItWas) {
     EXPECT_EQ(seen->sensors.back().time_usec, 16000u + kImuDivider * kDt / 1000u) << "the autopilot's clock continues from the end of boot";
 }
 
+// The boot's noise stream is the caller's: ExchangeConfig::boot reaches both the boot readings and the note the host keeps of the boot (its config is in the run
+// record). With the accelerometer's sigma at zero the held boot messages repeat their accelerometer and gyro readings exactly; the note carries the sigmas given.
+TEST(FcLinkExchange, TheBootMessagesNoiseAndTheBootNoteComeFromTheConfigsBootConfig) {
+    const spade::scene::ModelFile model = x500();
+    ASSERT_TRUE(model.model.propulsion.has_value());
+    std::optional<Rig> rig = make_rig(kImuDivider, 40, 20, kDt, 1, -9.81f);
+    ASSERT_TRUE(rig.has_value());
+    const std::vector<SensorBinding> imu{SensorBinding::of(rig->vehicle.imu_sensors[0])};
+    spade::Result<LockstepHost> host = LockstepHost::open(rig->sim, rig->vehicle, imu);
+    ASSERT_TRUE(host.has_value());
+
+    auto seen = std::make_shared<Seen>();
+    auto calls = std::make_shared<int>(0);
+    fcl::ExchangeConfig config;
+    config.chain = &*model.model.propulsion;
+    config.boot.sigma_accel = 0.0f;
+    config.boot.sigma_gyro = 0.0f;
+    config.boot.sigma_pressure_pa = 2.5f;
+    config.boot.sigma_mag_ut = 0.7f;
+    auto link = fcl::AutopilotLink::create(
+        [seen, calls](const mav::HilSensor& s, const std::optional<mav::HilGps>&) -> spade::Result<fcl::ActuatorReply> {
+            seen->sensors.push_back(s);
+            ++*calls;
+            return *calls <= 3 ? reply_of({0, 0, 0, 0}, true) : reply_of({0.5f, 0.5f, 0.5f, 0.5f});
+        },
+        config);
+    ASSERT_TRUE(link.has_value());
+    for (int i = 0; i < 4; ++i) ASSERT_TRUE(link->exchange(*host).has_value());  // three booting replies, then the one that ends the boot
+
+    ASSERT_GE(seen->sensors.size(), 4u);
+    for (std::size_t i = 1; i < 4; ++i) {
+        EXPECT_EQ(seen->sensors[i].xacc, seen->sensors[0].xacc) << "boot message " << i << ": no accelerometer noise was asked for";
+        EXPECT_EQ(seen->sensors[i].zacc, seen->sensors[0].zacc);
+        EXPECT_EQ(seen->sensors[i].xgyro, seen->sensors[0].xgyro);
+    }
+    ASSERT_TRUE(host->boot_note().has_value());
+    EXPECT_EQ(host->boot_note()->config.sigma_pressure_pa, 2.5f);
+    EXPECT_EQ(host->boot_note()->config.sigma_mag_ut, 0.7f);
+    EXPECT_EQ(host->boot_note()->config.sigma_accel, 0.0f);
+}
+
 [[nodiscard]] std::string trace_after_boot_of(int boot_steps) {
     const spade::scene::ModelFile model = x500();
     std::optional<Rig> rig = make_rig(kImuDivider, 40, 20, kDt, 1, -9.81f);

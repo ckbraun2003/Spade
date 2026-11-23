@@ -157,6 +157,19 @@ TEST(FcFlightWorld, TheBarometerAndMagnetometerNoiseAreTheKitProfilesWhiteSigmas
     EXPECT_EQ(kMagSigmaUt, kit->mag.sigma_white_ut);
 }
 
+// One noise source: the flight run's boot messages use the same barometer and magnetometer sigmas as its world, which are the kit profile's.
+TEST(FcFlightWorld, TheFlightRunsBootNoiseForTheBarometerAndMagnetometerIsTheKitProfilesToo) {
+    const auto kit = spade::fc_link::sensor_set(spade::fc_link::SensorProfile::kit, kDtNs, glm::vec3(20.0f, -40.0f, 5.0f), static_cast<float>(kGroundAmslM));
+    ASSERT_TRUE(kit.has_value()) << kit.error().context;
+    const spade::fc_host::BootConfig boot = flight_boot_config();
+    const spade::fc_host::BootConfig core_defaults{};
+    EXPECT_EQ(boot.sigma_pressure_pa, kit->baro.sigma_p_pa);
+    EXPECT_EQ(boot.sigma_mag_ut, kit->mag.sigma_white_ut);
+    EXPECT_EQ(boot.sigma_accel, core_defaults.sigma_accel) << "Core's accelerometer boot sigma is not touched here";
+    EXPECT_EQ(boot.sigma_gyro, core_defaults.sigma_gyro);
+    EXPECT_EQ(boot.seed, core_defaults.seed);
+}
+
 TEST(FcFlightWorld, ACommonDutyControllerTakesTheX500ToTwoMetersAndHoldsItAtASaneDuty) {
     std::optional<FlightWorld> w = make_flight_world();
     ASSERT_TRUE(w.has_value());
