@@ -56,8 +56,7 @@ TEST(FcFlightWorld, ACommonDutyControllerTakesTheX500ToTwoMetersAndHoldsItAtASan
         ASSERT_TRUE(host->take_sensors().has_value());
         if (k % 250 == 0) {  // a line a second of simulated time: what the controller saw and sent
             const auto b = w->sim.body(w->vehicle.body);
-            std::cout << "t " << k * dt << " s  altitude " << alt << " m  vy " << (b ? static_cast<double>((*b)->vel.y) : 0.0) << "  duty " << duty << "  omega0 " << (*omega)[0] << " rad/s
-";
+            std::cout << "t " << k * dt << " s  altitude " << alt << " m  vy " << (b ? static_cast<double>((*b)->vel.y) : 0.0) << "  duty " << duty << "  omega0 " << (*omega)[0] << " rad/s\n";
         }
         if (k * dt > 20.0) {  // the last five seconds
             duty_sum += duty;
