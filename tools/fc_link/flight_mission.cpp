@@ -26,6 +26,18 @@ std::vector<mavlink::CommandLong> FlightMission::step(const FlightObservation& o
             phase_ = Phase::failed;
         }
     };
+    // Settling: within hover_band of the takeoff height starts the hover (and counts toward hover_s); the takeoff timeout runs from the takeoff command.
+    const auto settle = [&]() {
+        const double off = std::fabs(o.altitude_m - config_.takeoff_height_m);
+        if (off <= config_.hover_band_m + kEps) {
+            journal_.push_back({"settled_within_m", true, off, config_.hover_band_m, o.time_s});
+            hover_start_s_ = o.time_s;
+            max_dev_m_ = off;
+            phase_ = Phase::hover;
+        } else if (o.time_s - takeoff_s_ >= config_.takeoff_timeout_s - kEps) {
+            fail("settled_within_m", off, config_.hover_band_m);
+        }
+    };
     switch (phase_) {
         case Phase::boot:
             if (o.time_s >= config_.ready_s - kEps) {
@@ -59,24 +71,15 @@ std::vector<mavlink::CommandLong> FlightMission::step(const FlightObservation& o
             if (off <= config_.takeoff_band_m + kEps) {
                 journal_.push_back({"takeoff_height", true, off, config_.takeoff_band_m, o.time_s});
                 phase_ = Phase::settle;
-                [[fallthrough]];  // it may already be inside the hover band: judged on this same observation
-            } else {
-                if (o.time_s - takeoff_s_ >= config_.takeoff_timeout_s - kEps) fail("takeoff_height", off, config_.takeoff_band_m);
-                break;
-            }
-        }
-        case Phase::settle: {
-            const double off = std::fabs(o.altitude_m - config_.takeoff_height_m);
-            if (off <= config_.hover_band_m + kEps) {
-                journal_.push_back({"settled_within_m", true, off, config_.hover_band_m, o.time_s});
-                hover_start_s_ = o.time_s;
-                max_dev_m_ = off;
-                phase_ = Phase::hover;
+                settle();  // it may already be inside the hover band: judged on this same observation
             } else if (o.time_s - takeoff_s_ >= config_.takeoff_timeout_s - kEps) {
-                fail("settled_within_m", off, config_.hover_band_m);
+                fail("takeoff_height", off, config_.takeoff_band_m);
             }
             break;
         }
+        case Phase::settle:
+            settle();
+            break;
         case Phase::hover: {
             const double dev = std::fabs(o.altitude_m - config_.takeoff_height_m);  // against the setpoint, not where the hover began
             max_dev_m_ = std::max(max_dev_m_, dev);
