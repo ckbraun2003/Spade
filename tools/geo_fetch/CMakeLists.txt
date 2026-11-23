@@ -17,3 +17,10 @@ endif()
 
 add_executable(spade_geo_fetch main.cpp)
 target_link_libraries(spade_geo_fetch PRIVATE spade_geo_fetch_lib spade_warnings)
+
+# The SDK install carries the tool on Windows (WinHTTP is its only HTTP layer; elsewhere it has none and is not installed). The Spade Editor's
+# own copy is a separate rule in its `editor` component (packaging/Packaging.cmake). tests/sdk_install_geo_fetch.cmake, run by the ctest
+# SdkInstall.GeoFetchIsInstalledAndAnswersHelp, installs the SDK and checks bin/spade_geo_fetch.exe is there and answers --help.
+if(WIN32)
+    install(TARGETS spade_geo_fetch RUNTIME DESTINATION bin)
+endif()
