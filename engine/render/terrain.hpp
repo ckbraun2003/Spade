@@ -46,6 +46,9 @@ struct TerrainSpec {
     bool lit = true;
     // The map's colour until the aerial texture (a later branch) replaces it: salt-flat white.
     glm::vec3 base_color{0.80f, 0.78f, 0.72f};
+    // Draw the map's aerial image over the mesh (the planar texture, SP-4): attach_terrain puts it in scene.planar_texture at the map's extent and marks the terrain's
+    // item. False (the default until the GL branch lands) draws the flat colour above, as before. STUB (RED): ignored for now.
+    bool textured = false;
 };
 
 struct TerrainStats {

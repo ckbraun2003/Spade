@@ -24,6 +24,8 @@
 #include "render/raymarch.hpp"
 #include "render/scene.hpp"
 #include "render/target.hpp"
+#include "render/terrain.hpp"
+#include "world/terrain_input.hpp"
 
 namespace {
 
@@ -257,4 +259,49 @@ TEST(PlanarTexture, ATextureNoItemAsksForChangesNothing) {
     for (size_t p = 0; p < a.size(); ++p) {
         ASSERT_TRUE(a[p].r == b[p].r && a[p].g == b[p].g && a[p].b == b[p].b) << "pixel " << p;
     }
+}
+
+// attach_terrain with spec.textured (SP-4): the map's image goes into the scene at the map's extent (x = east, z = -north, so the image's top row is the north edge), the terrain's item is marked, and a frame
+// shows the image's colours, north up. Without `textured` nothing changes: no texture in the scene, the item unmarked.
+TEST(PlanarTexture, AttachTerrainPutsTheMapsImageAtItsExtentWhenAskedAndLeavesThePlainMapAloneOtherwise) {
+    const auto make = [] {
+        spade::world::TerrainInput map;
+        map.nx = 20;
+        map.ny = 20;
+        map.extent = {-10.0, 10.0, -10.0, 10.0};  // east_min, east_max, north_min, north_max
+        map.heights.assign(20u * 20u, 0.0f);
+        map.image.width = 2;
+        map.image.height = 2;
+        map.image.rgb = {255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0};  // rows north to south: red green / blue yellow
+        return map;
+    };
+    {
+        RenderScene plain;
+        plain.materials = {Material{}};
+        plain.bounds = {glm::vec3(-60.0f, -5.0f, -60.0f), glm::vec3(60.0f, 5.0f, 60.0f)};
+        ASSERT_TRUE(spade::render::attach_terrain(plain, make()).has_value());
+        EXPECT_FALSE(plain.planar_texture.has_value());
+        EXPECT_FALSE(plain.statics.back().planar_textured);
+    }
+    RenderScene scene;
+    scene.materials = {Material{}};
+    scene.bounds = {glm::vec3(-60.0f, -5.0f, -60.0f), glm::vec3(60.0f, 5.0f, 60.0f)};
+    spade::render::TerrainSpec spec;
+    spec.textured = true;
+    ASSERT_TRUE(spade::render::attach_terrain(scene, make(), spec).has_value());
+    ASSERT_TRUE(scene.planar_texture.has_value());
+    EXPECT_TRUE(scene.statics.back().planar_textured);
+    EXPECT_EQ(scene.planar_texture->width, 2u);
+    EXPECT_EQ(scene.planar_texture->rgb.size(), 12u);
+    EXPECT_FLOAT_EQ(scene.planar_texture->x_min, -10.0f);
+    EXPECT_FLOAT_EQ(scene.planar_texture->x_max, 10.0f);
+    EXPECT_FLOAT_EQ(scene.planar_texture->z_min, -10.0f) << "z = -north: the north edge is the image's top row";
+    EXPECT_FLOAT_EQ(scene.planar_texture->z_max, 10.0f);
+    const std::vector<Rgb> frame = frame_of(scene, camera_over(20.0f));
+    ASSERT_EQ(frame.size(), static_cast<size_t>(kW) * kH);
+    const auto at = [&](int x, int y) { return frame[static_cast<size_t>(y) * kW + static_cast<size_t>(x)]; };
+    EXPECT_TRUE(at(54, 34).r > 120 && at(54, 34).g < 40 && at(54, 34).b < 40) << "north-west: red";
+    EXPECT_TRUE(at(106, 34).g > 120 && at(106, 34).r < 40 && at(106, 34).b < 40) << "north-east: green";
+    EXPECT_TRUE(at(54, 86).b > 120 && at(54, 86).r < 40 && at(54, 86).g < 40) << "south-west: blue";
+    EXPECT_TRUE(at(106, 86).r > 120 && at(106, 86).g > 120 && at(106, 86).b < 40) << "south-east: yellow";
 }
