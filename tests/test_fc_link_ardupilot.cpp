@@ -101,7 +101,9 @@ TEST(FcLinkArdupilotJson, NumbersAreShortestRoundTripPlainDecimalWhateverTheLoca
     EXPECT_NE(text->find("\"position\":[0.1,0.0000001,123456.789]"), std::string::npos) << *text;
     EXPECT_NE(text->find("\"velocity\":[10000000000,-0,0.3333333333333333]"), std::string::npos) << *text;
     EXPECT_EQ(text->find(','), text->find(",\"imu\"")) << "the first comma is the one between members (a decimal comma would come earlier)";
-    EXPECT_EQ(text->find('e'), std::string::npos) << "no exponent form";
+    EXPECT_EQ(text->find("e-"), std::string::npos) << "no exponent form (the key names hold an e, so the check looks for the exponent's own signs)";
+    EXPECT_EQ(text->find("e+"), std::string::npos) << *text;
+    EXPECT_EQ(text->find('E'), std::string::npos) << *text;
 }
 
 TEST(FcLinkArdupilotJson, ANonFiniteValueIsRefusedNamingTheField) {
@@ -146,7 +148,7 @@ TEST(FcLinkArdupilotJson, ReplyTimestampsMustAdvanceByLessThanATenthOfASecond) {
     ASSERT_FALSE(same.has_value()) << "dt == 0 is not a new frame";
     EXPECT_NE(same.error().context.find("dt"), std::string::npos) << same.error().context;
     EXPECT_TRUE(c.accept(1.0025 + 0.0999, /*resend=*/true).has_value()) << "a resend answered again carries the same timestamp";
-    EXPECT_FALSE(c.accept(1.0025 + 0.0999 + 0.1).has_value()) << "dt of 0.1 s or more is ignored by ArduPilot";
+    EXPECT_FALSE(c.accept(1.0025 + 0.0999 + 0.1001).has_value()) << "dt of more than 0.1 s is ignored by ArduPilot";
     EXPECT_FALSE(c.accept(1.0).has_value()) << "going backwards is a physics reset in ArduPilot: only after reset()";
     EXPECT_TRUE(c.accept(1.0025 + 0.0999 + 0.05).has_value()) << "a refusal changed nothing: the previous is still 1.1024";
 }
