@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <initializer_list>
 #include <limits>
 #include <optional>
 #include <span>
@@ -288,4 +289,138 @@ TEST(CameraModule, ASpawnTheRowRulesRefuseIsRefusedAtAttachNamingTheField) {
     refused([](CameraSensorSpawn& s) { s.cull_mask = 0x1FFu; }, "cull_mask");
     refused([](CameraSensorSpawn& s) { s.mount_orient = glm::quat(2.0f, 0.0f, 0.0f, 0.0f); }, "mount_orient");
     refused([](CameraSensorSpawn& s) { s.mount_pos.x = std::numeric_limits<float>::quiet_NaN(); }, "mount_pos");
+}
+
+// ---------------------------------------------------------------------------
+// CAPACITY ADMISSION (Phase 3.2, its own commit): a world declares how many cameras it holds (Capacities::cameras), how many pixels all of them together
+// render (camera_pixels), and whether its cameras may carry the keypoint channel (keypoint_groups). An attach that would pass any of them is refused by name at
+// the call, before a slot is reserved. The cameras and pixels of attaches still queued (not yet at the boundary) count, so a burst of spawns inside one step
+// cannot pass what a flushed world would refuse. Each sensor array still counts alone against `sensors`; these are the camera's own.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+[[nodiscard]] Capacities camera_caps(uint32_t cameras, uint32_t pixels, uint32_t groups = 0, uint32_t per_group = 0) {
+    Capacities c;
+    c.bodies = 4;
+    c.force_elements = 1;
+    c.sensors = 8;  // roomy: the sensor count must not be what binds
+    c.contacts = 1;
+    c.cameras = cameras;
+    c.camera_pixels = pixels;
+    c.keypoint_groups = groups;
+    c.keypoints_per_group = per_group;
+    return c;
+}
+
+struct CapRig {
+    Simulation sim;
+    BodyRef body;
+};
+
+[[nodiscard]] std::optional<CapRig> cap_rig(const Capacities& caps) {
+    Environment env;
+    env.gravity = glm::vec3(0.0f);
+    env.wind = glm::vec3(0.0f);
+    env.air_density = 1.225f;
+    const spade::Result<spade::WorldDesc> world = WorldBuilder().name("caps").environment(env).capacities(caps).build();
+    if (!world) return std::nullopt;
+    spade::physics::ContactParams contacts;
+    contacts.restitution_e = 0.0f;
+    contacts.friction_mu = 0.0f;
+    contacts.proxy_radius = 0.0f;
+    spade::physics::GridParams grid;
+    grid.cell_size = 1.0f;
+    WorldInstanceDesc instance;
+    instance.world = *world;
+    instance.seed = 7;
+    instance.turbulence = spade::dryden_params(TurbulenceLevel::none);
+    instance.contacts = contacts;
+    instance.grid = grid;
+    spade::Result<Simulation> sim = Simulation::create(WorldSetDesc{{instance}}, 2'000'000, 2, {}, standard_plus_camera());
+    if (!sim) return std::nullopt;
+    const spade::Result<BodyRef> body = sim->spawn(0, BodySpawn{});
+    if (!body) return std::nullopt;
+    return CapRig{std::move(*sim), *body};
+}
+
+[[nodiscard]] CameraSensorSpawn sized(uint32_t width, uint32_t height) {
+    CameraSensorSpawn s = good_spawn();
+    s.width = width;
+    s.height = height;
+    s.cx = static_cast<float>(width) / 2.0f;
+    s.cy = static_cast<float>(height) / 2.0f;
+    return s;
+}
+
+void expect_refused_naming(const spade::Result<RowRef>& r, std::initializer_list<const char*> needles) {
+    ASSERT_FALSE(r.has_value()) << "accepted";
+    EXPECT_EQ(r.error().code, spade::Code::capacity_exceeded) << r.error().context;
+    for (const char* needle : needles) EXPECT_NE(r.error().context.find(needle), std::string::npos) << "missing '" << needle << "' in: " << r.error().context;
+}
+
+}  // namespace
+
+TEST(CameraCapacity, ACameraPastTheDeclaredCountIsRefusedNamingTheCapacityAndQueuedAttachesCount) {
+    std::optional<CapRig> rig = cap_rig(camera_caps(2, 3 * 64 * 48));
+    ASSERT_TRUE(rig.has_value());
+    // two attaches inside one step: both still queued when the third asks
+    ASSERT_OK(rig->sim.attach_row(rig->body, "camera_sensors", good_spawn()));
+    ASSERT_OK(rig->sim.attach_row(rig->body, "camera_sensors", good_spawn()));
+    expect_refused_naming(rig->sim.attach_row(rig->body, "camera_sensors", good_spawn()), {"cameras", "2"});
+    // flushed, still refused, and the refusal is the same
+    ASSERT_OK(rig->sim.flush_structural());
+    expect_refused_naming(rig->sim.attach_row(rig->body, "camera_sensors", good_spawn()), {"cameras", "2"});
+}
+
+TEST(CameraCapacity, AWorldThatDeclaresNoCamerasRefusesACamera) {
+    std::optional<CapRig> rig = cap_rig(camera_caps(0, 0));
+    ASSERT_TRUE(rig.has_value());
+    expect_refused_naming(rig->sim.attach_row(rig->body, "camera_sensors", good_spawn()), {"cameras", "0"});
+}
+
+TEST(CameraCapacity, TheSumOfTheCamerasPixelsIsHeldToTheDeclaredPixelsAndAnExactFitPasses) {
+    std::optional<CapRig> rig = cap_rig(camera_caps(4, 2 * 64 * 48));
+    ASSERT_TRUE(rig.has_value());
+    ASSERT_OK(rig->sim.attach_row(rig->body, "camera_sensors", good_spawn()));  // 3072
+    ASSERT_OK(rig->sim.attach_row(rig->body, "camera_sensors", good_spawn()));  // 6144: exactly the declared pixels
+    expect_refused_naming(rig->sim.attach_row(rig->body, "camera_sensors", sized(2, 2)), {"camera_pixels", "6144"});
+    ASSERT_OK(rig->sim.flush_structural());
+    expect_refused_naming(rig->sim.attach_row(rig->body, "camera_sensors", sized(2, 2)), {"camera_pixels", "6144"});
+}
+
+TEST(CameraCapacity, OneCameraBiggerThanTheDeclaredPixelsIsRefusedAndAfterTheRefusalNothingIsReserved) {
+    std::optional<CapRig> rig = cap_rig(camera_caps(3, 2 * 64 * 48));
+    ASSERT_TRUE(rig.has_value());
+    ASSERT_OK(rig->sim.attach_row(rig->body, "camera_sensors", good_spawn()));
+    expect_refused_naming(rig->sim.attach_row(rig->body, "camera_sensors", sized(100, 100)), {"camera_pixels", "10000"});
+    // the refusal left no reservation behind: the count and the pixels still allow one more 64 x 48
+    ASSERT_OK(rig->sim.attach_row(rig->body, "camera_sensors", good_spawn()));
+    ASSERT_OK(rig->sim.flush_structural());
+    const auto rows = rig->sim.module_rows<CameraSensorRow>("camera_sensors", 0);
+    ASSERT_TRUE(rows.has_value());
+    uint32_t live = 0;
+    for (const CameraSensorRow& r : *rows) live += (r.kind == spade::sensors::sensor_kind::camera) ? 1u : 0u;
+    EXPECT_EQ(live, 2u);
+}
+
+TEST(CameraCapacity, TheKeypointChannelNeedsADeclaredKeypointGroupAndNamesItWhenThereIsNone) {
+    {
+        std::optional<CapRig> rig = cap_rig(camera_caps(2, 2 * 64 * 48));
+        ASSERT_TRUE(rig.has_value());
+        CameraSensorSpawn s = good_spawn();
+        s.channels = spade::sensors::camera_channel::image | spade::sensors::camera_channel::keypoints;
+        const auto r = rig->sim.attach_row(rig->body, "camera_sensors", s);
+        ASSERT_FALSE(r.has_value()) << "keypoints with no keypoint_groups declared";
+        EXPECT_EQ(r.error().code, spade::Code::invalid_argument) << r.error().context;
+        EXPECT_NE(r.error().context.find("keypoint_groups"), std::string::npos) << r.error().context;
+        EXPECT_NE(r.error().context.find("channels"), std::string::npos) << r.error().context;
+    }
+    {
+        std::optional<CapRig> rig = cap_rig(camera_caps(2, 2 * 64 * 48, 1, 4));
+        ASSERT_TRUE(rig.has_value());
+        CameraSensorSpawn s = good_spawn();
+        s.channels = spade::sensors::camera_channel::image | spade::sensors::camera_channel::keypoints;
+        ASSERT_OK(rig->sim.attach_row(rig->body, "camera_sensors", s));
+    }
 }

@@ -26,6 +26,7 @@
 #include "physics/contact_sets.hpp"
 #include "physics/integrator.hpp"
 #include "physics/lock.hpp"
+#include "sensors/camera.hpp"
 #include "sim/builtin_state.hpp"
 #include "sim/cadence.hpp"
 #include "vehicles/model_identity.hpp"
@@ -621,6 +622,9 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         config.declared_body_capacity = instance.world.capacities.bodies;
         config.declared_element_capacity = instance.world.capacities.force_elements;
         config.declared_sensor_capacity = instance.world.capacities.sensors;
+        config.declared_camera_capacity = instance.world.capacities.cameras;
+        config.declared_camera_pixels = instance.world.capacities.camera_pixels;
+        config.declared_keypoint_groups = instance.world.capacities.keypoint_groups;
         // PLACED REGIONS (stage 7 D2): resolved against the set's, and checked here because only here are both known.
         for (const RegionPlacement& placed : instance.regions) {
             const auto region = std::find_if(compiled->regions.begin(), compiled->regions.end(),
@@ -2496,6 +2500,10 @@ Result<RowRef> Simulation::attach_row_impl(BodyRef body, uint32_t array, std::sp
             }
         }
 
+        if (decl.name == "camera_sensors") {  // the camera's own capacities, on top of the sensor count above
+            if (Result<void> admitted = admit_camera(body.world_index, spawn, prefix); !admitted) return std::unexpected(admitted.error());
+        }
+
         const Result<uint32_t> reserved = arenas_.alloc_slot(id, body.world_index);
         if (!reserved) return std::unexpected(reserved.error());
         slot = *reserved;
@@ -2644,6 +2652,52 @@ Result<ImuSensorRef> Simulation::add_imu_sensor(BodyRef ref, const ImuSensorSpaw
                                                "add_imu_sensor");
     if (!row) return std::unexpected(row.error());
     return ImuSensorRef{row->world_index, row->slot};
+}
+
+Result<void> Simulation::admit_camera(uint32_t world_index, std::span<const std::byte> spawn, const std::string& prefix) const {
+    const WorldConfig& config = configs_[world_index];
+    sensors::CameraSensorSpawn asked{};
+    std::memcpy(&asked, spawn.data(), std::min(spawn.size(), sizeof(asked)));  // the size was checked against the declaration by the caller
+
+    // A keypoint channel with no declared keypoint_groups would write nothing: refused naming both, as the row's own rules name a field.
+    if ((asked.channels & sensors::camera_channel::keypoints) != 0u && config.declared_keypoint_groups == 0u) {
+        return std::unexpected(invalid(prefix + "channels asks for keypoints and world " + std::to_string(world_index) +
+                                       " declares no keypoint_groups"));
+    }
+
+    // What the world already holds: the live rows, then the attaches still queued for this array and world (a queued row is not yet a camera in the arena).
+    uint64_t cameras = 0;
+    uint64_t pixels = 0;
+    const Result<std::span<const sensors::CameraSensorRow>> rows = module_rows<sensors::CameraSensorRow>("camera_sensors", world_index);
+    if (!rows) return std::unexpected(rows.error());
+    for (const sensors::CameraSensorRow& row : *rows) {
+        if (row.kind != sensors::sensor_kind::camera) continue;
+        cameras += 1u;
+        pixels += uint64_t{row.width} * row.height;
+    }
+    const auto array = std::ranges::find(schedule_.arrays, std::string_view("camera_sensors"), &modules::CompiledArray::name);
+    const uint32_t array_index = static_cast<uint32_t>(array - schedule_.arrays.begin());
+    for (const StructuralOp& op : queue_) {
+        if (op.kind != OpKind::init_row || op.world_index != world_index || op.array != array_index) continue;
+        sensors::CameraSensorSpawn queued{};
+        std::memcpy(&queued, op.spawn.data(), std::min<std::size_t>(op.spawn_size, sizeof(queued)));
+        cameras += 1u;
+        pixels += uint64_t{queued.width} * queued.height;
+    }
+
+    if (cameras >= config.declared_camera_capacity) {
+        return std::unexpected(Error{Code::capacity_exceeded, prefix + "world " + std::to_string(world_index) + " is at its declared camera capacity (cameras: " +
+                                                                  std::to_string(config.declared_camera_capacity) + ")"});
+    }
+    const uint64_t asks = uint64_t{asked.width} * asked.height;
+    if (pixels + asks > config.declared_camera_pixels) {
+        return std::unexpected(Error{Code::capacity_exceeded,
+                                     prefix + "a " + std::to_string(asked.width) + " x " + std::to_string(asked.height) + " camera asks for " +
+                                         std::to_string(asks) + " pixels; with the " + std::to_string(pixels) + " world " + std::to_string(world_index) +
+                                         " already holds that is " + std::to_string(pixels + asks) + ", past its declared camera_pixels (" +
+                                         std::to_string(config.declared_camera_pixels) + ")"});
+    }
+    return {};
 }
 
 Result<uint32_t> Simulation::live_force_elements(uint32_t world_index) const {
