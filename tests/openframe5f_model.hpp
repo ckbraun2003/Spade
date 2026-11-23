@@ -88,6 +88,10 @@ inline constexpr double kKitXY = 5.507092446054248e-05, kKitXZ = -6.035344381419
 [[nodiscard]] inline std::filesystem::path data_dir() {
     return std::filesystem::path(SPADE_ASSETS_DIR).parent_path() / "tools" / "flow_movie" / "data" / "openframe5f";
 }
+// The film's own polar (polar C): one table, the part file, the notes and tests/test_fit_kernel.cpp are held to it.
+inline constexpr double kFilmAlpha0Deg = -4.3344;
+inline constexpr double kFilmCdScale = 2.0;
+inline constexpr double kFilmFitKernelCells = 2.97;
 inline constexpr const char* kModelFile = "openframe5f.model.yaml";
 inline constexpr const char* kPropFile = "parts/openframe5f_5in_mit5x4.prop.yaml";
 inline constexpr const char* kNotesFile = "openframe5f.notes.yaml";
@@ -95,8 +99,8 @@ inline constexpr const char* kNotesFile = "openframe5f.notes.yaml";
 // The line the card carries about the propeller (the lead, 2026-11-21).
 inline constexpr std::string_view kPropCaveat =
     "The propeller is a stand-in: UIUC's measured 5 x 4 in three-blade (MIT) tables and the library's fitted blade stand for the kit's HQProp 5X4.3X3, which has "
-    "no published data; the blade's polar was fitted at 6,057 rpm with a 12 mm kernel and is used here at about 9,000 rpm with a 1.25 mm cell, and the lines "
-    "carry about 0.9 of a quarter of the weight at the hover speed.";
+    "no published data; the blade's polar is this film's own fit at its 3.7 mm kernel (2.97 cells, 1.25 mm cell), between UIUC's measured 6,057 rpm point and "
+    "the 9,298 rpm point scaled from it, and the lines carry about 0.9 of a quarter of the weight at the hover speed.";
 
 [[nodiscard]] inline std::string notes_text() {
     return std::string(R"NOTES(# The website clips' flow model of an open-source 5 inch FPV quadcopter (the OpenFrame-5F kit): where each number came from.
@@ -122,7 +126,7 @@ inputs:
   battery: {value: "box 0.078 x 0.038 x 0.039 m, 0.200 kg, on the top plate's side of the stack", grade: assumed, note: "a Tattu R-Line 6S 1300 mAh class pack (retailer listings: 78 x 39 x 38 mm, 200 g +-20 g); the table's pose (-0.00385, 0.0535, 0), a layout choice the maker's build leaves open"}
   motor: {value: "the library's fpv_2306_1700kv with kv 1950 rpm/V, 0.032 kg", grade: assumed, note: "the OpenMotor 2306 6S 1950KV: its published kv; the resistance, no-load current, current limit, pole pairs and rotor inertia are the library's typical-2306 estimates; the 32 g and the 29.3 x 30.6 mm cylinder are the table's (a retailer's BETAFPV Snow 2306 stand-in; the maker's README says the motor mass is not yet measured). The solid is the table's cylinder as its own part record at the table's pose, centre 0.0243 m up, standing on the arm's top face (the compile's block rule would put it 4 mm higher)"}
   esc_battery: {value: "the library's fpv_4in1_45a (0.015 kg, 41.6 x 42.5 x 5 mm) and fpv_6s_1300 cells", grade: assumed, note: "stand-ins; the chain only fixes the hover throttle, the rotors turn at the speed the propeller part gives for a quarter of the weight. The ESC's pose is the table's (stack holes, Y 0.0155 m)"}
-  propeller: {value: "parts/openframe5f_5in_mit5x4.prop.yaml", grade: derived, note: "A STAND-IN: UIUC's measured 5 x 4 in three-blade (MIT) tables and the library's fitted blade for the HQProp 5X4.3X3 V2S the maker names, which has no published data or CAD. The polar (alpha_0 -4.3344, cd_scale 2.2885) was fitted at 6,057 rpm with a 12 mm kernel at R/dx 15 and is used here at about 9,000 rpm and a 1.25 mm cell (R/dx 50.8); the line's one-rotor thrust in the film box is about 0.9 of a quarter of the weight at hover (the X500's is 0.86 to 0.89)"}
+  propeller: {value: "parts/openframe5f_5in_mit5x4.prop.yaml", grade: derived, note: "A STAND-IN: UIUC's measured 5 x 4 in three-blade (MIT) tables and the library's fitted blade for the HQProp 5X4.3X3 V2S the maker names, which has no published data or CAD. The polar is this film's OWN fit, polar C (alpha_0 -4.3344, cd_scale 2.0, fit kernel 2.97 cells = 3.7 mm at R/dx 51), a two-speed compromise fitted through the line at the film's cell and checked at UIUC's measured 6,057 rpm point (docs/design/physics/records/2026-11-23-film-polar-fit.md); the library's own fit for this propeller is a different fit and is not what this film runs. The line's one-rotor thrust in the film box is about 0.9 of a quarter of the weight at hover (the X500's is 0.86 to 0.89)"}
 checks:
   balance: "the grid-free blade-element-momentum solve (tests/bemt_reference.hpp) for a quarter of the weight: see tests/test_openframe5f_case.cpp OpenFrame5fBalance"
   box: "252 x 237 x 284 at 1.25 mm (tests/d1_case.hpp kD1FpvGrid, x along the kit, z across), the drone held by d1_fpv_hold(0.0436)"
@@ -150,6 +154,23 @@ not_carried: "the Cross, camera side plates, standoffs, TPU parts (boots, bumper
             s.ref.note += " [the OpenFrame-5F build table's 4 g, assumed]";
         } else if (s.field == "blade.airfoil" || s.field == "blades" || s.field == "diameter" || s.field == "pitch" || s.field == "inertia") {
             s.ref.note += stand_in;
+        }
+    }
+    // THE FILM'S OWN POLAR (polar C; docs/design/physics/records/2026-11-23-film-polar-fit.md): the library's blade geometry and tables, a polar fitted for
+    // this film's kernel and cell. Not the library's: the three polar rows are the film's own fit, cited as such.
+    p.blade->alpha_0_deg = kFilmAlpha0Deg;
+    p.blade->cd_scale = kFilmCdScale;
+    p.blade->fit_kernel_cells = kFilmFitKernelCells;
+    const std::string fit_note =
+        "polar C, this film's own fit through the actuator line WITH THE TIP CORRECTION ON at the film's cell (R/dx 51, a 3.7 mm kernel = 2.97 cells), a "
+        "two-speed compromise between UIUC's measured 6,057 rpm point and the 9,298 rpm point scaled from it, verified at 6,057 rpm "
+        "(docs/design/physics/records/2026-11-23-film-polar-fit.md); valid only at that kernel and resolution and with the tip correction on; a LARGE drag "
+        "scale, a calibration and not a measured section";
+    for (scene::FieldSource& s : p.sources) {
+        if (s.field == "blade.alpha_0_deg" || s.field == "blade.cd_scale") {
+            s.ref.note = fit_note;
+        } else if (s.field == "blade.fit_kernel_cells") {
+            s.ref.note = "the kernel width, in cells, polar C was fitted at: " + fit_note;
         }
     }
     return p;

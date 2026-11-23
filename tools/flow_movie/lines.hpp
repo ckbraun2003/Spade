@@ -36,6 +36,7 @@ namespace flow_movie {
     lines.blade = prop->blade;
     lines.polar = prop->polar;
     lines.n_sub = n_sub;
+    lines.fit_kernel_cells = prop->fit_kernel_cells;  // the polar's declared kernel (0: none): the run holds the case to it
     return lines;
 }
 

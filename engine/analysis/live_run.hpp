@@ -281,6 +281,8 @@ struct LiveLines {
     physics::airflow::BladeShape blade;
     physics::airflow::PolarTable polar;
     uint32_t n_sub = 8;  // the line's sub-azimuths a step
+    float kernel_cells = 0.0f;      // the kernel width in cells the CASE asks for; 0 = none (the polar's declared one, else 2)
+    float fit_kernel_cells = 0.0f;  // the kernel width in cells the polar declares it was fitted at; 0 = none declared
 };
 
 class LiveFluid {

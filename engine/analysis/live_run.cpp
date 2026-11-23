@@ -24,6 +24,7 @@
 #include "physics/airflow/line.hpp"
 #include "physics/airflow/mac_grid.hpp"
 #include "physics/airflow/publish.hpp"
+#include "physics/airflow/rotor_lines.hpp"
 #include "physics/blade_azimuth.hpp"
 #include "sim/design_frame.hpp"
 #include "sim/simulation.hpp"
@@ -312,6 +313,7 @@ struct LiveRun::Impl {
     // Declared before the device: the device borrows the lines' blade and polar (LineSetup::polar), so it must be destroyed first.
     std::optional<LiveLines> lines;     // the rotors as actuator lines (L86j), start()'s copy
     std::unique_ptr<LiveFluid> device;  // the fluid, when start() was handed one; null: the CPU's, above
+    float line_eps = 2.0f;  // the kernel width in cells the lines run at: the case's, else the polar's declared, else 2
     std::vector<af::LineRotor> line_rotors;  // their lines this step
     std::vector<af::ActuatorDisc> line_discs;  // their discs with no load: the dye's release
     std::vector<float> psi_start;              // the blade azimuths as the step began (the line's own psi)
@@ -386,6 +388,9 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
                 return refuse(std::format("rotor {}'s radius {:.5g} m is not the blade's {:.5g} m: every rotor turns this one propeller",
                                           i, model.rotors[i].radius, lines->blade.radius));
             }
+        }
+        if (const Result<float> k = af::resolve_line_kernel(lines->kernel_cells, lines->fit_kernel_cells); !k) {
+            return refuse(k.error().context);
         }
     }
     if (resolved.solids_cg_floor > af::kSolidsCgCap) {
@@ -660,6 +665,7 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
     impl->discs.resize(model.rotors.size());
     if (lines != nullptr) {
         impl->lines = *lines;
+        impl->line_eps = *af::resolve_line_kernel(lines->kernel_cells, lines->fit_kernel_cells);  // checked at the top of start()
         impl->line_rotors.resize(model.rotors.size());
         impl->line_discs.resize(model.rotors.size());
         impl->psi_start.assign(model.rotors.size(), 0.0f);
@@ -683,7 +689,7 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
             start_rows[i] = **row;
         }
         if (Result<void> made = vehicles::rotor_lines(start_rows, impl->held, impl->psi_start, impl->grid_origin, resolved.base,
-                                                      impl->lines->blade, impl->lines->polar, impl->line_rotors);
+                                                      impl->lines->blade, impl->lines->polar, impl->line_rotors, impl->line_eps);
             !made) {
             return std::unexpected(Error{made.error().code, "live lines: " + made.error().context});
         }
@@ -794,7 +800,7 @@ Result<void> LiveRun::step(const Controls& controls) {
     if (r.device) {
         if (r.lines) {  // the lines carry the force; the discs go with no load, for the dye's release
             if (Result<void> l = vehicles::rotor_lines(r.rows, r.held, r.psi_start, r.grid_origin, r.resolved.base, r.lines->blade,
-                                                       r.lines->polar, r.line_rotors);
+                                                       r.lines->polar, r.line_rotors, r.line_eps);
                 !l) {
                 r.fault = "the rotors' lines were refused at step " + std::to_string(r.state.steps + 1) + ": " + l.error().context;
                 return std::unexpected(Error{l.error().code, r.fault});
@@ -926,7 +932,7 @@ std::string LiveRun::run_label() const {
     const bool one_model = std::all_of(rotors.begin(), rotors.end(),
                                        [&](const ResolvedRotor& x) { return x.model == rotors.front().model; });
     out += rotors.empty()  ? "no rotors"
-           : r.lines       ? "actuator line"
+           : r.lines       ? (r.line_eps == 2.0f ? std::string("actuator line") : std::format("actuator line (kernel {:g} cells)", r.line_eps))
            : one_model     ? std::string(rotor_model_name(rotors.front().model))
                            : "mixed rotors";
     out += " \xc2\xb7 ";  // a middle dot

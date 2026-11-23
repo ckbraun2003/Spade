@@ -11,7 +11,7 @@ namespace spade::vehicles {
 Result<void> rotor_lines(std::span<const RotorRow> rows, const BodyState& body, std::span<const float> psi,
                          glm::vec3 grid_origin_world, const physics::airflow::GridShape& grid,
                          const physics::airflow::BladeShape& blade, const physics::airflow::PolarTable& polar,
-                         std::span<physics::airflow::LineRotor> out) {
+                         std::span<physics::airflow::LineRotor> out, float eps_cells) {
     namespace airflow = physics::airflow;
     if (out.size() != rows.size() || psi.size() != rows.size()) {
         return std::unexpected(Error{Code::invalid_argument, "rotor lines: " + std::to_string(rows.size()) + " rotor rows, " +
@@ -33,7 +33,8 @@ Result<void> rotor_lines(std::span<const RotorRow> rows, const BodyState& body, 
                                           .omega = row.enabled != 0u ? row.omega : 0.0f,
                                           .psi = psi[i],
                                           .blade = &blade,
-                                          .polar = &polar};
+                                          .polar = &polar,
+                                          .eps_cells = eps_cells};
         Result<airflow::LineRotor> line = airflow::line_from_rotor(spec, b, grid_origin_world, grid);
         if (!line) {
             return std::unexpected(

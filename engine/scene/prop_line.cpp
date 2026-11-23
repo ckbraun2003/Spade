@@ -32,6 +32,7 @@ Result<LinePropeller> line_propeller(const PropPart& part) {
         out.polar = physics::airflow::estimated_polar(
             {static_cast<float>(*g.alpha_0_deg), static_cast<float>(*g.cd_scale)});
         out.fitted = true;
+        if (g.fit_kernel_cells) out.fit_kernel_cells = static_cast<float>(*g.fit_kernel_cells);
     } else {
         out.polar = physics::airflow::estimated_polar();
         out.fitted = false;

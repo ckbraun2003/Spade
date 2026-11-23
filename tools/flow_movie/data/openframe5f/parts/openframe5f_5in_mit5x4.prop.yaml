@@ -54,7 +54,8 @@ prop:
     hub_cutout: 0.15
     airfoil: "unknown"
     alpha_0_deg: -4.3344
-    cd_scale: 2.2885
+    cd_scale: 2
+    fit_kernel_cells: 2.97
 sources:
   diameter: {source: "uiuc_propdb", grade: measured, note: "Micro Invent 5x4 [the OpenFrame-5F: a stand-in for the kit's HQProp 5X4.3X3 V2S, which has no published data; the library's polar was fitted at 6,057 rpm with a 12 mm kernel]"}
   pitch: {source: "uiuc_propdb", grade: measured, note: "its name, 5x4 [the OpenFrame-5F: a stand-in for the kit's HQProp 5X4.3X3 V2S, which has no published data; the library's polar was fitted at 6,057 rpm with a 12 mm kernel]"}
@@ -70,5 +71,6 @@ sources:
   blade.beta_deg: {source: "uiuc_propdb", grade: measured, note: "UIUC geometry, resampled"}
   blade.hub_cutout: {source: "uiuc_propdb", grade: measured, note: "the first station"}
   blade.airfoil: {grade: assumed, note: "unknown for every prop (P-b); Physics picks the polar [the OpenFrame-5F: a stand-in for the kit's HQProp 5X4.3X3 V2S, which has no published data; the library's polar was fitted at 6,057 rpm with a 12 mm kernel]"}
-  blade.alpha_0_deg: {source: "uiuc_propdb", grade: fitted, note: "fitted through the actuator line WITH THE TIP CORRECTION ON to UIUC's static C_T and C_Q (docs/design/physics/plans/2026-11-17-b1-polar-fits.md); valid only at the kernel width and resolution fitted and with the tip correction on: 12 mm kernel (2.83 cells), R/dx 15, 6057 rpm, D 5 in, 3 blades; line C_T 0.18089 vs UIUC 0.18147, C_Q 0.019029 vs 0.018924; a LARGE drag scale, a calibration to the static point and not a measured section"}
-  blade.cd_scale: {source: "uiuc_propdb", grade: fitted, note: "fitted through the actuator line WITH THE TIP CORRECTION ON to UIUC's static C_T and C_Q (docs/design/physics/plans/2026-11-17-b1-polar-fits.md); valid only at the kernel width and resolution fitted and with the tip correction on: 12 mm kernel (2.83 cells), R/dx 15, 6057 rpm, D 5 in, 3 blades; line C_T 0.18089 vs UIUC 0.18147, C_Q 0.019029 vs 0.018924; a LARGE drag scale, a calibration to the static point and not a measured section"}
+  blade.alpha_0_deg: {source: "uiuc_propdb", grade: fitted, note: "polar C, this film's own fit through the actuator line WITH THE TIP CORRECTION ON at the film's cell (R/dx 51, a 3.7 mm kernel = 2.97 cells), a two-speed compromise between UIUC's measured 6,057 rpm point and the 9,298 rpm point scaled from it, verified at 6,057 rpm (docs/design/physics/records/2026-11-23-film-polar-fit.md); valid only at that kernel and resolution and with the tip correction on; a LARGE drag scale, a calibration and not a measured section"}
+  blade.cd_scale: {source: "uiuc_propdb", grade: fitted, note: "polar C, this film's own fit through the actuator line WITH THE TIP CORRECTION ON at the film's cell (R/dx 51, a 3.7 mm kernel = 2.97 cells), a two-speed compromise between UIUC's measured 6,057 rpm point and the 9,298 rpm point scaled from it, verified at 6,057 rpm (docs/design/physics/records/2026-11-23-film-polar-fit.md); valid only at that kernel and resolution and with the tip correction on; a LARGE drag scale, a calibration and not a measured section"}
+  blade.fit_kernel_cells: {source: "uiuc_propdb", grade: fitted, note: "the kernel width, in cells, polar C was fitted at: polar C, this film's own fit through the actuator line WITH THE TIP CORRECTION ON at the film's cell (R/dx 51, a 3.7 mm kernel = 2.97 cells), a two-speed compromise between UIUC's measured 6,057 rpm point and the 9,298 rpm point scaled from it, verified at 6,057 rpm (docs/design/physics/records/2026-11-23-film-polar-fit.md); valid only at that kernel and resolution and with the tip correction on; a LARGE drag scale, a calibration and not a measured section"}

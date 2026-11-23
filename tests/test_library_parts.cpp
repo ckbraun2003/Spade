@@ -326,6 +326,14 @@ void set_polar(PropPart& part, std::string_view id) {
     note += fit->fit;
     part.sources.push_back(FieldSource{"blade.alpha_0_deg", cite(Grade::fitted, kUiuc, note)});
     part.sources.push_back(FieldSource{"blade.cd_scale", cite(Grade::fitted, kUiuc, note)});
+    // The kernel the polar was fitted at, in cells: a line runs it at this width and a case that asks for another is refused by name.
+    part.blade->fit_kernel_cells = fit->fit_kernel_cells;
+    std::string kernel = "the kernel width, in cells, the polar was fitted at (";
+    kernel += kPolarRecord;
+    kernel += "): a line runs this polar at this width, and a case that asks for another width is refused by name; the polar holds only WITH THE TIP CORRECTION ON at "
+              "the kernel and resolution fitted: ";
+    kernel += fit->fit;
+    part.sources.push_back(FieldSource{"blade.fit_kernel_cells", cite(Grade::fitted, kUiuc, kernel)});
 }
 
 [[nodiscard]] std::uint32_t blades_of(const Prop& p) { return static_cast<std::uint32_t>(p.blades); }
@@ -899,6 +907,7 @@ TEST(LibraryParts, OnlyTheFourFittedPropsCarryThePolarAndItIsTheFitsHeaders) {
         if (fit == nullptr) {
             EXPECT_FALSE(prop->blade->alpha_0_deg.has_value());
             EXPECT_FALSE(prop->blade->cd_scale.has_value());
+            EXPECT_FALSE(prop->blade->fit_kernel_cells.has_value());
             EXPECT_EQ(citation(prop->sources, "blade.alpha_0_deg"), nullptr);
             continue;
         }
@@ -907,7 +916,9 @@ TEST(LibraryParts, OnlyTheFourFittedPropsCarryThePolarAndItIsTheFitsHeaders) {
         ASSERT_TRUE(prop->blade->cd_scale.has_value());
         EXPECT_EQ(bits(*prop->blade->alpha_0_deg), bits(fit->alpha_0_deg));
         EXPECT_EQ(bits(*prop->blade->cd_scale), bits(fit->cd_scale));
-        for (const char* field : {"blade.alpha_0_deg", "blade.cd_scale"}) {
+        ASSERT_TRUE(prop->blade->fit_kernel_cells.has_value()) << "the polar declares the kernel it was fitted at";
+        EXPECT_EQ(bits(*prop->blade->fit_kernel_cells), bits(fit->fit_kernel_cells));
+        for (const char* field : {"blade.alpha_0_deg", "blade.cd_scale", "blade.fit_kernel_cells"}) {
             const SourceRef* ref = citation(prop->sources, field);
             ASSERT_NE(ref, nullptr) << field;
             EXPECT_EQ(ref->source, kUiuc) << field;

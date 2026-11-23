@@ -64,7 +64,12 @@
 // uses the estimated polar. The values hold only under the conditions their
 // citation's note names (the line's tip correction on, the kernel width and
 // resolution they were fitted at): they are a calibration, not a measured
-// section.
+// section. A polar may also DECLARE the kernel width it was fitted at,
+// `fit_kernel_cells` (in cells, finite, within [1, 3] as the line's own kernel
+// is), only with the two above: a line runs the polar at that width, and a case
+// that asks for another is refused by name (physics/airflow/rotor_lines.hpp,
+// resolve_line_kernel). Absent, the polar declares none and the part's bytes
+// are what they were.
 //
 // NO MOUNT. An ESC's and a battery's mount is where a drone places them, so it
 // is the drone's (L5), not the part's: the text has no mount, the emitter
@@ -75,7 +80,8 @@
 // since its kind and size are one description. So the cited fields are the
 // block's keys, less those two, plus `shape` when the part has one and the
 // five blade keys when it has a blade, plus "blade.alpha_0_deg" and
-// "blade.cd_scale" when the blade has a polar. `sources` holds exactly those, no more
+// "blade.cd_scale" when the blade has a polar, plus "blade.fit_kernel_cells"
+// when the polar declares one. `sources` holds exactly those, no more
 // and no fewer: a field without a citation is refused by its path, and so is
 // a citation of a field the part does not have, or of an identity string
 // ("the motor's field 'stator' takes no citation"). In a citation, `source` is
@@ -137,6 +143,9 @@ struct BladeGeometry {
     std::string airfoil{};
     std::optional<double> alpha_0_deg{};  // the line's polar for this propeller (POLAR above); both or neither
     std::optional<double> cd_scale{};
+    // The kernel width, in cells, the polar was fitted at (POLAR above): a line runs this polar at it; a case that asks for another
+    // width is refused. Optional, and only with the two above; absent = the polar declares none.
+    std::optional<double> fit_kernel_cells{};
 };
 
 struct MotorPart {

@@ -52,6 +52,7 @@ spec:
       airfoil: "unknown"
       alpha_0_deg: -3.0645
       cd_scale: 1.3514
+      fit_kernel_cells: 2.93
   sources:
     diameter: {source: "uiuc_propdb", grade: derived, note: "derived: UIUC's APC Thin Electric 10x5 is a 10 in propeller; the X500 V2 kit's propeller is the 1045, 10 in (Holybro's kit page; KAT's x500.airframe.json evidence), so R is 0.127 m"}
     pitch: {source: "uiuc_propdb", grade: derived, note: "derived: 5.0 in as UIUC's 10x5; the kit's 1045 is 4.5 in (Holybro's kit page), so the blade's pitch is 11% above the kit's"}
@@ -69,6 +70,7 @@ spec:
     blade.airfoil: {grade: assumed, note: "unknown for every prop (P-b); Physics picks the polar"}
     blade.alpha_0_deg: {source: "uiuc_propdb", grade: fitted, note: "fitted through the actuator line WITH THE TIP CORRECTION ON to UIUC's static C_T and C_Q (docs/design/physics/plans/2026-11-17-b1-polar-fits.md); valid only at the kernel width and resolution fitted and with the tip correction on: 12 mm kernel (2.93 cells), R/dx 31, 5000 rpm, D 10 in; line C_T 0.09619 vs UIUC 0.09636, C_Q 0.005886 vs 0.005870 [the X500: used at UIUC's own 10 in, the kit's 1045 size; the library's part applies it at 9.4 in (NASA's rotor)]"}
     blade.cd_scale: {source: "uiuc_propdb", grade: fitted, note: "fitted through the actuator line WITH THE TIP CORRECTION ON to UIUC's static C_T and C_Q (docs/design/physics/plans/2026-11-17-b1-polar-fits.md); valid only at the kernel width and resolution fitted and with the tip correction on: 12 mm kernel (2.93 cells), R/dx 31, 5000 rpm, D 10 in; line C_T 0.09619 vs UIUC 0.09636, C_Q 0.005886 vs 0.005870 [the X500: used at UIUC's own 10 in, the kit's 1045 size; the library's part applies it at 9.4 in (NASA's rotor)]"}
+    blade.fit_kernel_cells: {source: "uiuc_propdb", grade: fitted, note: "the kernel width, in cells, the polar was fitted at (docs/design/physics/plans/2026-11-17-b1-polar-fits.md): a line runs this polar at this width, and a case that asks for another width is refused by name; 12 mm kernel (2.93 cells), R/dx 31, 5000 rpm, D 10 in; line C_T 0.09619 vs UIUC 0.09636, C_Q 0.005886 vs 0.005870"}
 sources:
   mass_properties.mass: {grade: assumed, note: "library uiuc_apce_10x5 propeller 0.013 kg (assumed)"}
   install_points.seat: {source: "holybro_x500_v2_kit", grade: derived, note: "the glTF's hub bottom face, 0.0160 m below its origin (measured by Core on x500-rotor-front-ccw.gltf, the prop material's lowest vertices); it sits on the motor's prop_hub, so the part's own mount offset is the inverse of this point"}
