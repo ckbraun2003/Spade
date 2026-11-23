@@ -68,3 +68,7 @@ All eight viewer scenes step at 4 ms with 4 substeps (250 ticks/s) on the CPU ba
 - **Functional:** the eight viewer scenes compare on bit-identical trajectories (the digests here). The three `Sandbox` scenes have no trajectory; a successor shows the same systems running stably.
 - **Visual:** judged on geometry, motion and materials, never a pixel diff. v1 draws through OpenGL; successors draw through Spade's renderers.
 - **Performance:** physics step time and memory for the viewer scenes; fresh numbers only for the `Sandbox` scenes.
+
+## Redaction of 2026-11-23 (L-S34)
+
+The `exe` field of each of the eleven `capture.json` files named the capturing machine's user folder in its path. On 2026-11-23, under L-S34 (no tracked file holds a host user folder path), each was rewritten by hand to the path relative to the repository root, `build-ninja/release/bin/spade_viewer.exe` (the viewer scenes) or `build-ninja/release/bin/Sandbox.exe` (the three sandbox scenes). Nothing else in any file changed: the hashes, times, machine record, frames and memory are as captured, and nothing was recaptured. `engine/tools/viewer/capture-v1-baselines.ps1` now writes that relative form itself (the file's name alone when the program is outside the repository), so a later capture cannot put a user folder in. The history is untouched: older commits still hold the earlier text.
