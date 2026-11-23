@@ -1593,9 +1593,7 @@ constexpr float kVortexFloor = -5.0f;
                     if (!isos.empty()) scene.flow_layers.push_back(render::FlowLayer{&field, {}, std::move(isos)});
                     // O183: a tube the open floor face would cut flat shows as a flat end; report it, from the frame the tubes are cut from.
                     const TubeFloorCheck floor = tube_floor_check(field, ql, 2u);
-                    std::printf("[ tubes ] floor check: %s (the lowest tube cell %.1f mm above the floor, the bottom 2 layers %s)\n",
-                                !floor.any_tube ? "no tube" : floor.reaches_floor ? "REACHES THE FLOOR" : "stops short", static_cast<double>(floor.lowest_height_m) * 1000.0,
-                                floor.reaches_floor ? "hold a tube" : "are clear");
+                    std::printf("%s\n", tube_floor_line(floor).c_str());
                     return note;
                 };
                 return v;
@@ -1751,7 +1749,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
         if (!lc) return std::unexpected(lc.error());
         if (plan.cg_floor != 0u && plan.cg_floor != 8u) {  // a raised floor is a different solve: the cache's mark names it (8 is the engine's own)
             lc->solids_cg_floor = plan.cg_floor;
-            lc->identity += " cg_floor " + std::to_string(plan.cg_floor);
+            lc->identity += web::cg_floor_mark(plan.cg_floor);
         }
         auto made = case_film(std::move(*lc), plan.frames, still ? "web-d1-still" : "web-d1", false, plan.look,
                                plan.particles || plan.particles_preview, plan.nasa, plan.volume, plan.drone->parts_cp_range, plan.tubes, plan.tube_field);

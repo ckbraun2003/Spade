@@ -1788,3 +1788,43 @@ TEST(FlowMovieWeb, TheTubesFilmsCaptionNamesTheTubesColouredByPressureAndKeepsTh
     EXPECT_EQ(lower.find("soft cloud"), std::string::npos) << text;
     EXPECT_EQ(lower.find("nasa"), std::string::npos) << text;
 }
+
+// O158 (Oversight): the 5 inch FPV's film says how much of the rotor model's force lands in solid cells, from Physics' measurement of the solver's own build_solids on the film's propeller:
+// the exact words below, on the FPV's card and no other drone's (the X500 carries no such claim). No caption anywhere carries the retracted geometry-only bounds (4%, 2%, about 4).
+TEST(FlowMovieWeb, TheFpvCardSaysTheRotorForceInSolidCellsAsMeasuredAndNoCaptionCarriesTheRetractedBounds) {
+    const std::string measured = "the actuator line's force reaching solid cells: measured at under 0.05% of the thrust at the motor tops, counting partly closed faces";
+    const auto caption_of = [](const char* drone, float cell_mm, bool tubes) {
+        web::CaptionInput in;
+        in.clip = web::find_clip("S8");
+        in.drone = web::find_drone(drone);
+        in.lines = true;
+        in.pressure = true;
+        in.blades = true;
+        in.tubes = tubes;
+        in.shaded = true;
+        in.cell_mm = cell_mm;
+        in.step_us = 25u;
+        in.command = "flow_movie --web S8";
+        return web::caption_text(in);
+    };
+    const std::string fpv = caption_of("openframe5f", 1.25f, false);
+    const std::string fpv_tubes = caption_of("openframe5f", 1.25f, true);
+    const std::string x500 = caption_of("x500", 2.5f, false);
+    EXPECT_NE(fpv.find(measured), std::string::npos) << fpv;
+    EXPECT_NE(fpv_tubes.find(measured), std::string::npos) << fpv_tubes;
+    EXPECT_EQ(x500.find("force reaching solid cells"), std::string::npos) << "the X500 carries no such claim: " << x500;
+    for (const std::string* text : {&fpv, &fpv_tubes, &x500}) {
+        EXPECT_EQ(text->find("4%"), std::string::npos) << *text;
+        EXPECT_EQ(text->find("2%"), std::string::npos) << *text;
+        EXPECT_EQ(text->find("about 4"), std::string::npos) << *text;
+    }
+}
+
+// The cache's mark names a raised CG floor and nothing for the engine's own (O158): 0 (not given) and 8 are the same solve and give the same words, none; 12 names the floor, so a cache solved at
+// another floor is never reused for it.
+TEST(FlowMovieWeb, TheCacheMarkNamesARaisedCgFloorAndNothingForTheEnginesOwn) {
+    EXPECT_EQ(web::cg_floor_mark(0u), "");
+    EXPECT_EQ(web::cg_floor_mark(8u), "") << "8 is the engine's own floor: the same solve as 0";
+    EXPECT_EQ(web::cg_floor_mark(12u), " cg_floor 12");
+    EXPECT_NE(web::cg_floor_mark(12u), web::cg_floor_mark(16u));
+}
