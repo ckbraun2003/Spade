@@ -26,6 +26,7 @@
 #include "editor_model_params.hpp"
 #include "editor_airflow.hpp"
 #include "editor_panels.hpp"
+#include "editor_shown_file.hpp"
 #include "pilot_keys.hpp"  // kPilotKeysHelp
 #include "ui_theme.hpp"
 
@@ -710,7 +711,7 @@ void inspect_asset(ed::EditorPanels& p, const scene::SceneAsset& a) {
     if (!p.selected_source.empty()) {
         p.drawn.imported_from = true;
         ImGui::PushTextWrapPos(0.0f);
-        ImGui::TextDisabled("imported from %s", p.selected_source.c_str());
+        ImGui::TextDisabled("%s", ed::imported_from_text(p.selected_source).c_str());
         ImGui::PopTextWrapPos();
     }
     if (ui::section("Transform", true) && ui::begin_properties("transform")) {

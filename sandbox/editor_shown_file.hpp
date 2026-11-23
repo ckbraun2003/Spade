@@ -22,7 +22,8 @@ namespace spade::sandbox::editor {
 // (the same rule as the title). Split on both kinds of separator, so a Windows path is cut the same on every platform. The panels draw this and the
 // live smoke's path watch reads this (drawn_texts), so the watch sees what is drawn.
 [[nodiscard]] inline std::string imported_from_text(std::string_view source) {
-    return "imported from " + std::string(source);  // RED: the whole path, as drawn before
+    const std::size_t cut = source.find_last_of("/\\");
+    return "imported from " + std::string(cut == std::string_view::npos ? source : source.substr(cut + 1));
 }
 
 }  // namespace spade::sandbox::editor
