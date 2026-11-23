@@ -151,6 +151,7 @@ exit 0
     $startCode = $LASTEXITCODE
     $runLine = @(Get-Content -LiteralPath $calls | Where-Object { $_ -match '^run ' }) -join ' '
     Expect 'start' ($startCode -eq 0) "exit 0 (got $startCode): $($so -join ' ')"
+    Expect 'start' ($runLine -match '^run -d --pull never ') "the run command never pulls an image: a missing one fails the start and nobody fetches it (got: $runLine)"
     Expect 'start' ($runLine -match 'mkdir -p \S*rootfs/log') "the run command creates the log folder first (got: $runLine)"
     Expect 'start' ($runLine -match 'exec \S*/bin/px4 \S*/etc -s etc/init\.d-posix/rcS -d') "and then execs px4 with its data dir and rcS (got: $runLine)"
 
