@@ -93,7 +93,9 @@ struct CameraHost::Impl {
     }
     [[nodiscard]] Tagged& find_or_add(BodyRef b) {
         if (Tagged* t = find(b)) return *t;
-        bodies.push_back(Tagged{.body = b});
+        Tagged fresh;
+        fresh.body = b;
+        bodies.push_back(std::move(fresh));
         return bodies.back();
     }
     [[nodiscard]] Result<void> check_body(BodyRef b) const {
