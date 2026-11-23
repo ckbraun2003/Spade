@@ -897,6 +897,7 @@ add_library(spade_sim STATIC
     sensors/mag.cpp
     sensors/imu.cpp
     sim/simulation.cpp
+    sim/camera_host.cpp
     sim/world_set.cpp
 )
 add_library(spade::sim ALIAS spade_sim)
