@@ -73,6 +73,7 @@ private:
     FlightConfig config_;
     Phase phase_ = Phase::boot;
     std::vector<FlightCheck> journal_;
+    double first_arm_s_ = 0.0, last_arm_s_ = 0.0, takeoff_s_ = 0.0, hover_start_s_ = 0.0, hover_ref_m_ = 0.0, max_dev_m_ = 0.0, land_s_ = 0.0;
 };
 
 }  // namespace spade::fc_link
