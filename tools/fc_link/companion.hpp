@@ -18,8 +18,8 @@ namespace spade::fc_link {
 
 // The companion's own MAVLink ids: the source of its heartbeat and its commands (PX4 addresses its COMMAND_ACKs to them). System 1 is PX4's own
 // system id; 191 is MAV_COMP_ID_ONBOARD_COMPUTER. One place, so the heartbeat and the commands never disagree.
-inline constexpr uint8_t kCompanionSystemId = 0;     // RED
-inline constexpr uint8_t kCompanionComponentId = 0;  // RED
+inline constexpr uint8_t kCompanionSystemId = 1;
+inline constexpr uint8_t kCompanionComponentId = 191;
 
 class HeartbeatSchedule {
 public:

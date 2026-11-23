@@ -136,7 +136,7 @@ TEST(FcLiveCompanion, TheCompanionHeartbeatReachesPx4AndWhatComesBackIsRecorded)
         ++done;
         const double sim_s = static_cast<double>(done - 1) * 0.004;  // Spade's own tick time, as FcLivePx4 counts it
         if (schedule.due((done - 1) * 4000u)) {
-            const auto frame = mav::encode(mav::Header{seq++, 1, 191}, mav::Message{companion_heartbeat()});  // 191 = MAV_COMP_ID_ONBOARD_COMPUTER
+            const auto frame = mav::encode(mav::Header{seq++, kCompanionSystemId, kCompanionComponentId}, mav::Message{companion_heartbeat()});  // 191 = MAV_COMP_ID_ONBOARD_COMPUTER
             if ((*udp)->write(frame)) ++heartbeats_sent;
             else ++send_failures;
         }
