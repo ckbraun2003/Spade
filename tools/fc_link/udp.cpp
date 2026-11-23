@@ -9,6 +9,10 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <mstcpip.h>
+
+#ifndef SIO_UDP_CONNRESET  // not in every SDK header set
+#define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
+#endif
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
