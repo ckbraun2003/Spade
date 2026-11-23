@@ -19,13 +19,20 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
+#include <iterator>
+#include <limits>
+#include <optional>
 #include <set>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include "fc_run_folder_check.hpp"
@@ -154,7 +161,7 @@ TEST(FcRunFolder, TheGoodBudgetFolderPassesEveryImplementedCheckAndNamesWhatIsUn
         EXPECT_NE(c.verdict, Verdict::fail) << c.id << ": " << c.detail;
         EXPECT_NE(c.verdict, Verdict::absent) << c.id << ": " << c.detail;
     }
-    EXPECT_EQ(unchecked, (std::set<std::string>{"K4.log", "K4.span", "K4.firmware", "K4.params", "K4.cadence", "K4.estimator", "K6.recount", "K11.replay"})) << r.text();
+    EXPECT_EQ(unchecked, (std::set<std::string>{"K4.log", "K4.span", "K4.firmware", "K4.params", "K4.cadence", "K4.estimator", "K4.ekf.fault", "K4.ekf.solution", "K4.ekf.innov", "K4.ekf.failsafe", "K4.ekf.log", "K6.recount", "K11.replay"})) << r.text();
     for (const char* id : {"K1", "K2", "K3", "K5", "K6", "K7", "K9", "K10"}) {
         const auto* c = r.find(id, Verdict::pass);
         EXPECT_NE(c, nullptr) << id << " has no passing result\n" << r.text();
@@ -677,7 +684,7 @@ TEST(FcRunFolder, TheTraceAndCommandsOfCoresSampleRunAreRecomputedAndAgree) {
     std::set<std::string> unchecked;
     for (const auto& c : r.results)
         if (c.verdict == Verdict::unchecked) unchecked.insert(c.id);
-    EXPECT_EQ(unchecked, (std::set<std::string>{"K4.log", "K4.span", "K4.firmware", "K4.params", "K4.cadence", "K4.estimator", "K6.recount", "K11.replay"}));
+    EXPECT_EQ(unchecked, (std::set<std::string>{"K4.log", "K4.span", "K4.firmware", "K4.params", "K4.cadence", "K4.estimator", "K4.ekf.fault", "K4.ekf.solution", "K4.ekf.innov", "K4.ekf.failsafe", "K4.ekf.log", "K6.recount", "K11.replay"}));
 }
 
 TEST(FcRunFolder, TheLoaderReadsAFolderFromDiskAndTheVerdictIsTheSame) {
@@ -1302,6 +1309,323 @@ TEST(FcRunFolder, K4_TheEstimatorIsUncheckedWhenItIsNotThere) {
     EXPECT_NE(none.find("K4.estimator", Verdict::unchecked), nullptr) << none.text();
 }
 
+// K4.ekf.*: the estimator's own health, read from the autopilot's log (instance 0 of each topic; the settle window is 5 s from the first estimator_status
+// stamp). The fixtures use PX4's own field names with fewer fields; the real logs (below) are the check against the whole formats.
+namespace {
+
+constexpr uint64_t kT0 = 100000;  // the first estimator_status stamp in the fixtures, in microseconds
+// Trailing padding is NOT stored in a data message (the real logs' formats end in `uint8_t[N] _paddingN`): the bodies below stop before it.
+constexpr const char* kStatusFormat = "estimator_status:uint64_t timestamp;uint32_t filter_fault_flags;uint16_t solution_status_flags;uint8_t[2] _padding0;";
+constexpr const char* kRatioFormat = "estimator_innovation_test_ratios:uint64_t timestamp;float[2] gps_hvel;float baro_vpos;float[3] gravity;";
+constexpr const char* kFailsafeFormat =
+    "failsafe_flags:uint64_t timestamp;uint32_t mode_req_attitude;bool attitude_invalid;bool local_position_invalid;bool gcs_connection_lost;"
+    "bool auto_mission_missing;bool extra_flag;uint8_t battery_warning;uint8_t[1] _padding0;";
+
+struct HealthRow {
+    uint64_t t_us = 0;
+    uint32_t fault = 0;
+    uint16_t solution = 959;
+    std::array<float, 6> ratios{0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f};  // gps_hvel[0], gps_hvel[1], baro_vpos, gravity[0], gravity[1], gravity[2]
+    std::array<uint8_t, 5> flags{0, 0, 1, 1, 0};  // attitude_invalid, local_position_invalid, gcs_connection_lost (headless), auto_mission_missing (headless), extra_flag
+};
+
+struct LoggedLine {
+    char level = '6';
+    uint64_t t_us = 0;
+    std::string text;
+};
+
+struct HealthOpts {
+    uint8_t multi = 0;
+    bool status = true;
+    bool ratios = true;
+    bool failsafe = true;
+    std::string status_format = kStatusFormat;
+    std::string ratio_format = kRatioFormat;
+};
+
+// 21 rows, 0.5 s apart (10 s). The first four (under 2 s) hold PX4's start-up values, the way the real logs do: not yet aligned, ratios far over 1,
+// the attitude and position flags set. From 2 s on the estimator is healthy; the two headless flags are set throughout.
+[[nodiscard]] std::vector<HealthRow> healthy_rows() {
+    std::vector<HealthRow> rows;
+    for (uint64_t k = 0; k < 21; ++k) {
+        HealthRow r;
+        r.t_us = kT0 + k * 500000;
+        if (k < 4) {
+            r.solution = k == 0 ? 128 : 164;
+            r.ratios = {9.0f, 0.1f, 0.1f, 2.7f, 0.1f, 0.1f};
+            r.flags = {1, 1, 1, 1, 0};
+        }
+        rows.push_back(r);
+    }
+    return rows;
+}
+
+[[nodiscard]] std::string put32_of(uint32_t v) {
+    std::string s;
+    for (int i = 0; i < 4; ++i) s.push_back(static_cast<char>((v >> (8 * i)) & 0xFF));
+    return s;
+}
+
+[[nodiscard]] std::vector<ux::Msg> health_log(const std::vector<HealthRow>& rows, const std::vector<LoggedLine>& lines = {LoggedLine{'6', 200000, "boot"}},
+                                              const HealthOpts& o = HealthOpts{}) {
+    using namespace ux;
+    std::vector<Msg> v = good_messages();
+    std::vector<Msg> formats;
+    std::vector<Msg> subs;
+    const auto sub = [&](uint16_t id, const char* name) {
+        std::string a(1, static_cast<char>(o.multi));
+        put16(a, id);
+        a += name;
+        subs.push_back(Msg{'A', a});
+    };
+    if (o.status) {
+        formats.push_back(Msg{'F', o.status_format});
+        sub(10, "estimator_status");
+    }
+    if (o.ratios) {
+        formats.push_back(Msg{'F', o.ratio_format});
+        sub(11, "estimator_innovation_test_ratios");
+    }
+    if (o.failsafe) {
+        formats.push_back(Msg{'F', kFailsafeFormat});
+        sub(12, "failsafe_flags");
+    }
+    v.insert(v.begin() + kFStatus + 1, formats.begin(), formats.end());
+    v.insert(v.begin() + kSubGyro + static_cast<std::ptrdiff_t>(formats.size()), subs.begin(), subs.end());
+    for (const HealthRow& r : rows) {
+        if (o.status) {
+            std::string d;
+            put16(d, 10);
+            put64(d, r.t_us);
+            d += put32_of(r.fault);
+            put16(d, r.solution);  // the 2 bytes of padding are not stored
+            v.push_back({'D', d});
+        }
+        if (o.ratios) {
+            std::string d;
+            put16(d, 11);
+            put64(d, r.t_us);
+            for (const float f : r.ratios) d += float_bytes(f);
+            v.push_back({'D', d});
+        }
+        if (o.failsafe) {
+            std::string d;
+            put16(d, 12);
+            put64(d, r.t_us);
+            d += put32_of(0x1234);  // mode_req_attitude: a uint32, not a flag
+            for (const uint8_t f : r.flags) d.push_back(static_cast<char>(f));
+            d.push_back('\0');  // battery_warning, a uint8: not a bool flag
+            v.push_back({'D', d});
+        }
+    }
+    for (const LoggedLine& l : lines) {
+        std::string d(1, l.level);
+        put64(d, l.t_us);
+        d += l.text;
+        v.push_back({'L', d});
+    }
+    return v;
+}
+
+[[nodiscard]] Report ekf_report(const std::vector<ux::Msg>& v) {
+    return spade::fc::check_run_folder(spade::fc::RunFolder{good_measured(), ux::assemble(v)});
+}
+
+[[nodiscard]] std::pair<Verdict, std::string> ekf_of(const std::vector<ux::Msg>& v, std::string_view id) {
+    const Report r = ekf_report(v);
+    const auto* c = result_of(r, id);
+    return c != nullptr ? std::make_pair(c->verdict, c->detail) : std::make_pair(Verdict::absent, "no " + std::string(id) + " row");
+}
+
+constexpr std::array<const char*, 5> kEkfIds{"K4.ekf.fault", "K4.ekf.solution", "K4.ekf.innov", "K4.ekf.failsafe", "K4.ekf.log"};
+
+}  // namespace
+
+TEST(FcRunFolder, K4_TheReaderReadsTheEstimatorHealthTopics) {
+    std::vector<HealthRow> rows = healthy_rows();
+    rows[2].fault = 0x4;
+    rows[2].ratios[5] = 1.5f;
+    rows[2].flags[4] = 1;
+    HealthOpts other;
+    other.multi = 1;
+    const UlogResult one = read_msgs(health_log(rows, {LoggedLine{'3', 300000, "abcd"}, LoggedLine{'6', 400000, "xy"}}, other));
+    ASSERT_EQ(one.kind, UlogResult::Kind::well_formed) << one.detail;
+    EXPECT_FALSE(one.ekf_status.present) << "instance 1 is not read";
+    EXPECT_FALSE(one.test_ratios.present);
+    EXPECT_FALSE(one.failsafe.present);
+    const UlogResult r = read_msgs(health_log(rows, {LoggedLine{'3', 300000, "abcd"}, LoggedLine{'6', 400000, "xy"}}));
+    ASSERT_EQ(r.kind, UlogResult::Kind::well_formed) << r.detail;
+    ASSERT_TRUE(r.ekf_status.present);
+    EXPECT_TRUE(r.ekf_status.problem.empty()) << r.ekf_status.problem;
+    ASSERT_EQ(r.ekf_status.samples.size(), 21u);
+    EXPECT_EQ(r.ekf_status.samples[0].t_us, kT0);
+    EXPECT_EQ(r.ekf_status.samples[0].solution_flags, 128u);
+    EXPECT_EQ(r.ekf_status.samples[2].fault_flags, 0x4u);
+    EXPECT_EQ(r.ekf_status.samples[20].solution_flags, 959u);
+    ASSERT_TRUE(r.test_ratios.present);
+    EXPECT_EQ(r.test_ratios.names, (std::vector<std::string>{"gps_hvel[0]", "gps_hvel[1]", "baro_vpos", "gravity[0]", "gravity[1]", "gravity[2]"})) << "the float fields, arrays by index";
+    ASSERT_EQ(r.test_ratios.rows.size(), 21u);
+    EXPECT_EQ(r.test_ratios.t_us[2], kT0 + 2 * 500000);
+    EXPECT_FLOAT_EQ(r.test_ratios.rows[0][0], 9.0f);
+    EXPECT_FLOAT_EQ(r.test_ratios.rows[2][5], 1.5f);
+    ASSERT_TRUE(r.failsafe.present);
+    EXPECT_EQ(r.failsafe.names, (std::vector<std::string>{"attitude_invalid", "local_position_invalid", "gcs_connection_lost", "auto_mission_missing", "extra_flag"}))
+        << "the bool fields only: the uint32 and the uint8 are not flags";
+    ASSERT_EQ(r.failsafe.rows.size(), 21u);
+    EXPECT_EQ(r.failsafe.rows[0], (std::vector<uint8_t>{1, 1, 1, 1, 0}));
+    EXPECT_EQ(r.failsafe.rows[2][4], 1);
+    EXPECT_EQ(r.failsafe.rows[20], (std::vector<uint8_t>{0, 0, 1, 1, 0}));
+    ASSERT_EQ(r.log_lines.size(), 4u) << "the fixture's own logged string and tagged one, and the two added";
+    EXPECT_EQ(r.log_lines[0].level, static_cast<uint8_t>('6'));
+    EXPECT_EQ(r.log_lines[1].text_bytes, 6u) << "the tagged one: 'tagged'";
+    EXPECT_EQ(r.log_lines[2].level, static_cast<uint8_t>('3'));
+    EXPECT_EQ(r.log_lines[2].t_us, 300000u);
+    EXPECT_EQ(r.log_lines[2].text_bytes, 4u);
+    EXPECT_EQ(r.log_lines[3].text_bytes, 2u);
+}
+
+TEST(FcRunFolder, K4_AHealthyEstimatorPassesEveryEkfCheckAndItsStartUpIsNotJudged) {
+    const Report r = ekf_report(health_log(healthy_rows()));
+    for (const char* id : kEkfIds) {
+        const auto* c = result_of(r, id);
+        ASSERT_NE(c, nullptr) << id;
+        EXPECT_EQ(c->verdict, Verdict::pass) << id << ": " << c->detail;
+    }
+    const auto* innov = result_of(r, "K4.ekf.innov");
+    EXPECT_NE(innov->detail.find("before the window"), std::string::npos) << "start-up's large ratio is printed, not judged: " << innov->detail;
+    const auto* failsafe = result_of(r, "K4.ekf.failsafe");
+    EXPECT_NE(failsafe->detail.find("gcs_connection_lost"), std::string::npos) << failsafe->detail;
+    EXPECT_NE(failsafe->detail.find("auto_mission_missing"), std::string::npos) << failsafe->detail;
+}
+
+TEST(FcRunFolder, K4_AFilterFaultFailsAtAnyTimeAndNamesTheFirst) {
+    std::vector<HealthRow> rows = healthy_rows();
+    rows[1].fault = 0x4;  // 0.5 s in: inside the window, and still a fault
+    rows[9].fault = 0x80000;
+    const auto r = ekf_of(health_log(rows), "K4.ekf.fault");
+    EXPECT_EQ(r.first, Verdict::fail);
+    EXPECT_NE(r.second.find("0x4 at 600000 us (0.500000 s"), std::string::npos) << r.second;
+    EXPECT_NE(r.second.find("2 of 21 samples"), std::string::npos) << r.second;
+    EXPECT_EQ(ekf_of(health_log(healthy_rows()), "K4.ekf.fault").first, Verdict::pass);
+    for (const size_t edge : {size_t{0}, healthy_rows().size() - 1}) {  // the first and the last sample are judged like any other
+        std::vector<HealthRow> one = healthy_rows();
+        one[edge].fault = 0x1;
+        const auto e = ekf_of(health_log(one), "K4.ekf.fault");
+        EXPECT_EQ(e.first, Verdict::fail) << "row " << edge << ": " << e.second;
+        EXPECT_NE(e.second.find("1 of 21 samples"), std::string::npos) << e.second;
+    }
+}
+
+TEST(FcRunFolder, K4_TheSolutionMustHoldTheKinematicBitsAfterTheWindow) {
+    const auto at = [&](size_t row, uint16_t value) {
+        std::vector<HealthRow> rows = healthy_rows();
+        rows[row].solution = value;
+        return ekf_of(health_log(rows), "K4.ekf.solution");
+    };
+    EXPECT_EQ(at(8, 0).first, Verdict::pass) << "k = 8 is 4.0 s: inside the 5 s window, anything goes";
+    EXPECT_EQ(at(20, 831).first, Verdict::pass) << "the constant-position bit (7) clears in the air; it is not required either way";
+    EXPECT_EQ(at(20, 959 | 64).first, Verdict::pass) << "bit 6 (above-ground height) is not required";
+    auto r = at(14, 959 & ~8);  // 7.0 s, bit 3 (relative horizontal position) missing
+    EXPECT_EQ(r.first, Verdict::fail);
+    EXPECT_NE(r.second.find("at 7100000 us (7.000000 s"), std::string::npos) << r.second;
+    EXPECT_NE(r.second.find("missing"), std::string::npos) << r.second;
+    EXPECT_NE(r.second.find("bit 3"), std::string::npos) << r.second;
+    r = at(15, 959 | 1024);
+    EXPECT_EQ(r.first, Verdict::fail);
+    EXPECT_NE(r.second.find("GPS glitch"), std::string::npos) << r.second;
+    r = at(16, 959 | 2048);
+    EXPECT_EQ(r.first, Verdict::fail);
+    EXPECT_NE(r.second.find("accelerometer"), std::string::npos) << r.second;
+}
+
+TEST(FcRunFolder, K4_AnInnovationRatioOverOneAfterTheWindowFailsAndNamesTheFieldAndTheTime) {
+    const auto at = [&](size_t row, size_t field, float value) {
+        std::vector<HealthRow> rows = healthy_rows();
+        rows[row].ratios[field] = value;
+        return ekf_of(health_log(rows), "K4.ekf.innov");
+    };
+    EXPECT_EQ(at(8, 3, 50.0f).first, Verdict::pass) << "4.0 s: inside the window";
+    EXPECT_EQ(at(14, 3, 1.0f).first, Verdict::pass) << "a ratio of exactly 1 is within the limit";
+    auto r = at(14, 5, 40.5f);
+    EXPECT_EQ(r.first, Verdict::fail);
+    EXPECT_NE(r.second.find("gravity[2] is 40.5 at 7100000 us (7.000000 s"), std::string::npos) << r.second;
+    EXPECT_NE(r.second.find("1 of 11 samples"), std::string::npos) << "the count of samples after the window (rows from 5 s to 10 s: 11) is named: " << r.second;
+    r = at(14, 5, 1.0001f);
+    EXPECT_EQ(r.first, Verdict::fail) << "just over";
+    r = at(14, 0, std::numeric_limits<float>::quiet_NaN());
+    EXPECT_EQ(r.first, Verdict::fail);
+    EXPECT_NE(r.second.find("not a number"), std::string::npos) << r.second;
+    EXPECT_NE(r.second.find("gps_hvel[0]"), std::string::npos) << r.second;
+}
+
+TEST(FcRunFolder, K4_AFailsafeFlagOutsideTheHeadlessListFailsByNameAfterTheWindow) {
+    const auto at = [&](size_t row, size_t flag, uint8_t value) {
+        std::vector<HealthRow> rows = healthy_rows();
+        rows[row].flags[flag] = value;
+        return ekf_of(health_log(rows), "K4.ekf.failsafe");
+    };
+    EXPECT_EQ(at(8, 0, 1).first, Verdict::pass) << "attitude_invalid at 4.0 s: inside the window";
+    EXPECT_EQ(at(14, 2, 0).first, Verdict::pass) << "a headless flag that clears is fine";
+    auto r = at(14, 0, 1);
+    EXPECT_EQ(r.first, Verdict::fail);
+    EXPECT_NE(r.second.find("attitude_invalid is true at 7100000 us (7.000000 s"), std::string::npos) << r.second;
+    r = at(15, 4, 1);
+    EXPECT_EQ(r.first, Verdict::fail) << "a flag that is on no list fails by its name";
+    EXPECT_NE(r.second.find("extra_flag"), std::string::npos) << r.second;
+    r = at(15, 1, 1);
+    EXPECT_NE(r.second.find("local_position_invalid"), std::string::npos) << r.second;
+}
+
+TEST(FcRunFolder, K4_ALoggedLineAtErrorOrAboveFailsAndItsTextIsNeverQuoted) {
+    const auto with = [&](std::vector<LoggedLine> lines) { return ekf_of(health_log(healthy_rows(), std::move(lines)), "K4.ekf.log"); };
+    EXPECT_EQ(with({LoggedLine{'6', 1000, "ok"}, LoggedLine{'4', 2000, "warn"}, LoggedLine{'5', 3000, "notice"}}).first, Verdict::pass) << "warning is above ERROR in the number, below it in severity";
+    auto r = with({LoggedLine{'6', 1000, "ok"}, LoggedLine{'3', 2500000, "SECRETWORD"}});
+    EXPECT_EQ(r.first, Verdict::fail);
+    EXPECT_NE(r.second.find("level 3"), std::string::npos) << r.second;
+    EXPECT_NE(r.second.find("10 bytes"), std::string::npos) << r.second;
+    EXPECT_EQ(r.second.find("SECRETWORD"), std::string::npos) << "the text is not quoted: " << r.second;
+    EXPECT_EQ(with({LoggedLine{'0', 1000, "x"}}).first, Verdict::fail) << "emergency";
+    EXPECT_EQ(with({LoggedLine{'2', 1000, "x"}}).first, Verdict::fail) << "critical";
+    r = with({LoggedLine{'x', 1000, "x"}});
+    EXPECT_EQ(r.first, Verdict::fail) << "a level byte that is not 0 to 7";
+    EXPECT_NE(r.second.find("not a ULog level"), std::string::npos) << r.second;
+}
+
+TEST(FcRunFolder, K4_TheEkfChecksAreUncheckedWhenWhatTheyReadIsNotThere) {
+    for (const char* id : kEkfIds) {
+        const auto r = ekf_of(ux::good_messages(), id);
+        if (std::string_view(id) == "K4.ekf.log") continue;  // good_messages() holds a logged string: nothing above INFO
+        EXPECT_EQ(r.first, Verdict::unchecked) << id << ": the log holds none of the topics: " << r.second;
+    }
+    HealthOpts instance_one;
+    instance_one.multi = 1;
+    for (const char* id : {"K4.ekf.fault", "K4.ekf.solution", "K4.ekf.innov", "K4.ekf.failsafe"})
+        EXPECT_EQ(ekf_of(health_log(healthy_rows(), {}, instance_one), id).first, Verdict::unchecked) << id << ": only instance 1 is there";
+    std::vector<HealthRow> short_run = healthy_rows();
+    short_run.resize(8);  // 3.5 s: the window (5 s) is never over
+    EXPECT_EQ(ekf_of(health_log(short_run), "K4.ekf.fault").first, Verdict::pass) << "the fault check has no window";
+    for (const char* id : {"K4.ekf.solution", "K4.ekf.innov", "K4.ekf.failsafe"}) {
+        const auto r = ekf_of(health_log(short_run), id);
+        EXPECT_EQ(r.first, Verdict::unchecked) << id << ": no sample after the window";
+        EXPECT_NE(r.second.find("5 s"), std::string::npos) << r.second;
+    }
+    HealthOpts no_fault_field;
+    no_fault_field.status_format = "estimator_status:uint64_t timestamp;uint16_t solution_status_flags;";
+    const auto nf = ekf_of(health_log(healthy_rows(), {}, no_fault_field), "K4.ekf.fault");
+    EXPECT_EQ(nf.first, Verdict::unchecked);
+    EXPECT_NE(nf.second.find("filter_fault_flags"), std::string::npos) << nf.second;
+    HealthOpts nested;
+    nested.ratio_format = "estimator_innovation_test_ratios:uint64_t timestamp;some_nested_type inner;float x;";
+    const auto nn = ekf_of(health_log(healthy_rows(), {}, nested), "K4.ekf.innov");
+    EXPECT_EQ(nn.first, Verdict::unchecked) << "a field of a type the reader does not read";
+    std::vector<ux::Msg> unknown = health_log(healthy_rows());
+    unknown.insert(unknown.begin() + ux::kSubGyro, ux::Msg{'Z', "x"});
+    for (const char* id : kEkfIds) EXPECT_EQ(ekf_of(unknown, id).first, Verdict::unchecked) << id << ": an unread log's samples are not read";
+    const Report none = spade::fc::check_run_folder(spade::fc::RunFolder{good_measured()});
+    for (const char* id : kEkfIds) EXPECT_NE(none.find(id, Verdict::unchecked), nullptr) << id << "\n" << none.text();
+}
+
 // A real PX4 log: SPADE_FC_ULOG names a .ulg file (for example one a live fc run left in px4-log/); unset, the case skips by name, so the 12 MB logs of
 // the live runs are never committed. It checks the reader against the real thing, including the message types and sizes the spec page extract lacked.
 TEST(FcRunFolder, TheRealPx4LogIsWellFormed) {
@@ -1370,10 +1694,83 @@ TEST(FcRunFolder, TheRealPx4LogCoversTheRunsSimulatedTime) {
     ASSERT_NE(est, nullptr);
     std::cout << "K4.estimator: " << est->detail << "\n";
     EXPECT_EQ(est->verdict, Verdict::pass) << est->detail;
+    for (const char* id : kEkfIds) {
+        const auto* c = result_of(folder, id);
+        ASSERT_NE(c, nullptr) << id;
+        std::cout << id << ": " << c->detail << "\n";
+        EXPECT_EQ(c->verdict, Verdict::pass) << id << ": " << c->detail;
+    }
     const auto* params = result_of(folder, "K4.params");
     ASSERT_NE(params, nullptr);
     std::cout << "K4.params: " << static_cast<int>(params->verdict) << " " << params->detail << "\n";
     if (!airframe_path.empty()) {
         EXPECT_EQ(params->verdict, Verdict::pass) << params->detail;
     }
+}
+
+// The two real FLIGHT logs (dry runs 3 and 4b: arm, take off, hover, land, self-disarm), each named by an environment variable and skipped by name
+// when unset: SPADE_FC_ULOG_DRY3 and SPADE_FC_ULOG_DRY4B. PINNED TODAY, as a characterization (the lead's decision, 2026-11-23): both fail K4.ekf.innov, on
+// the `gravity` ratio, at the touchdown, and K4.ekf.log, on five ERR-level lines each ("[vehicle_magnetometer] MAG #0 failed:  STALE!" at 3.4 and 3.6 s,
+// "[vehicle_air_data] BARO #n failed:  STALE!" later: the autopilot's own sensor validators saw no new sample in time); the other checks are clean. The tests
+// flip loudly when Core's IMU fix or the link's sensor timing changes that.
+// THE CLOCK: a log stamp is PX4's ULog `timestamp` in microseconds, which runs on the lockstep link's own clock (the HIL_SENSOR time_usec; K4.span
+// compares it to the run's last time and it matches). Spade's truth trace (flight-trace.csv, t_s) counts from tick 0, so
+//   log stamp = boot_end_time_usec + t_s * 1e6, with boot_end_time_usec = (boot_steps + 1) * 4000 us.
+// dry3: boot_steps 10, so 44,000 us; dry4b: boot_steps 50, so 204,000 us (flight-report.txt of each run; checked against each log's last estimator stamp:
+// 46,872,000 us against 46.848 s + 44,000 us, and 51,036,000 us against 50.848 s + 204,000 us, the log ending 20 and 16 ms early).
+// So the gravity samples are at truth t_s = 41.772 s and 41.780 s (dry3) and 43.816 s (dry4b). The truth trace is sampled about every 0.1 s (rows at 41.656 s,
+// 0.0052 m, and 41.760 s, 0.0077 m, in dry3; 43.708 s, 0.0029 m, and 43.812 s, 0.0137 m, in dry4b): the first sample over 1 is 12 ms (dry3) and 4 ms (dry4b)
+// after the trace row that follows first contact, not at a trace row. Finer evidence (the per-tick trace.bin of a run record) is for the next flight.
+namespace {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)  // getenv
+#endif
+[[nodiscard]] std::string env_path_of(const char* name) {
+    const char* v = std::getenv(name);
+    return v != nullptr ? std::string(v) : std::string();
+}
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+
+[[nodiscard]] Report flight_report_of(const char* env, std::string* bytes_out) {
+    const std::string path = env_path_of(env);
+    std::ifstream in(path, std::ios::binary);
+    EXPECT_TRUE(in.good()) << "cannot read the file " << env << " names";
+    *bytes_out = std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return spade::fc::check_run_folder(spade::fc::RunFolder{good_measured(), *bytes_out, std::nullopt, std::nullopt, 4000});
+}
+
+void expect_flight_finding(const char* env, std::initializer_list<const char*> innov_phrases, std::initializer_list<const char*> log_phrases) {
+    if (env_path_of(env).empty()) GTEST_SKIP() << env << " is not set (the path of a flight .ulg)";
+    std::string bytes;
+    const Report r = flight_report_of(env, &bytes);
+    for (const char* id : {"K4.log", "K4.ekf.fault", "K4.ekf.solution", "K4.ekf.failsafe"}) {
+        const auto* c = result_of(r, id);
+        ASSERT_NE(c, nullptr) << id;
+        std::cout << id << ": " << c->detail << "\n";
+        EXPECT_EQ(c->verdict, Verdict::pass) << id << ": " << c->detail;
+    }
+    const auto* innov = result_of(r, "K4.ekf.innov");
+    ASSERT_NE(innov, nullptr);
+    std::cout << "K4.ekf.innov: " << innov->detail << "\n";
+    EXPECT_EQ(innov->verdict, Verdict::fail) << "the known finding: the gravity ratio over 1 at touchdown (if this now passes, the finding is gone: say so, then update this pin)\n" << innov->detail;
+    for (const char* phrase : innov_phrases) EXPECT_NE(innov->detail.find(phrase), std::string::npos) << phrase << "\n" << innov->detail;
+    const auto* log = result_of(r, "K4.ekf.log");
+    ASSERT_NE(log, nullptr);
+    std::cout << "K4.ekf.log: " << log->detail << "\n";
+    EXPECT_EQ(log->verdict, Verdict::fail) << "the known finding: five sensor-stale ERR lines (if this now passes, the finding is gone: say so, then update this pin)\n" << log->detail;
+    for (const char* phrase : log_phrases) EXPECT_NE(log->detail.find(phrase), std::string::npos) << phrase << "\n" << log->detail;
+}
+}  // namespace
+
+TEST(FcRunFolder, TheRealFlightLogOfDryRun3HasTheKnownTouchdownGravityFinding) {
+    expect_flight_finding("SPADE_FC_ULOG_DRY3", {"gravity[0] is 3.858 at 41816000 us (41.312000 s", "2 of 4138 samples", "gravity[1] 5.972"},
+                          {"at 3396000 us is level 3 (ERR)", "46 bytes", "5 of "});
+}
+
+TEST(FcRunFolder, TheRealFlightLogOfDryRun4bHasTheKnownTouchdownGravityFinding) {
+    expect_flight_finding("SPADE_FC_ULOG_DRY4B", {"gravity[0] is 7.419 at 44020000 us (43.696000 s", "1 of 4572 samples", "gravity[2] 40.41"},
+                          {"at 3556000 us is level 3 (ERR)", "46 bytes", "5 of "});
 }

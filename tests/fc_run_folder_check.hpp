@@ -23,6 +23,8 @@
 //   K3.trace_hash  the layout, the SHA-256 trailer, the rolling hash recomputed tick by tick, and run.yaml's trace_hash and trace_ticks
 //   K11.commands   commands.bin well formed, and consistent with the trace's applied rotor command at every tick
 // The checks that need what the record does not hold are reported `unchecked` with their reason, so one cannot go quiet unnoticed:
+//   K4.ekf.*       the estimator's own health from the autopilot log (fault flags, solution bits, innovation test ratios, failsafe flags, log levels): see
+//                  the block above check_run_folder
 //   K4.log         the autopilot log past its header: time span, firmware version, parameter hash (its FRAMING is checked when a log is given:
 //                  fc_ulog_check.hpp, "well-formed"; with no log given it stays unchecked)
 //   K6.recount     the overrun recount: it needs per-tick costs, and the record has none (measured mode; costs.yaml is phase 2)
@@ -33,6 +35,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -533,6 +536,338 @@ inline CheckResult check_commands(const TraceInfo& in, std::string_view trace, s
 
 }  // namespace detail
 
+// ---------------------------------------------------------------------------
+// K4.ekf.*: the estimator's own health, read from the autopilot's log (instance 0 of each topic). Five checks, none of which needs a flight:
+//   K4.ekf.fault     estimator_status.filter_fault_flags is 0 at EVERY sample (no settle window: a fault at start-up is a fault).
+//   K4.ekf.solution  from the settle window on, estimator_status.solution_status_flags has bits 0 to 5 (attitude, both velocities, the three positions)
+//                    set and bits 10 (GPS glitch) and 11 (bad accelerometer data) clear. Bit 7 (constant-position mode) is not judged: it is set on the ground
+//                    and clears in the air.
+//   K4.ekf.innov     from the window on, every field of estimator_innovation_test_ratios is at most 1 and a number.
+//   K4.ekf.failsafe  from the window on, no bool of failsafe_flags is true except the HEADLESS ALLOW-LIST below, checked per flag so a flag that is on no list
+//                    fails by its name.
+//   K4.ekf.log       no logged string at level ERR (3) or above (0 to 3); the text is never quoted, only its level, stamp and length.
+// THE WINDOW is 5 s from the first estimator_status stamp (the lead's decision, 2026-11-23). It was measured, not guessed: in the two live logs (fc-live-1,
+// fc-live-2) and the two flights (dry runs 3 and 4b) every START-UP value (the innovation ratios over 1, the position and attitude flags of failsafe_flags,
+// the solution bits) had settled by 2.9 s; takeoff in the flights is at about 20 s. (The touchdown gravity ratio of the two flights is not a start-up value.)
+// THE CLOCK. A stamp is PX4's ULog `timestamp` in microseconds, on the lockstep link's clock (the HIL_SENSOR time_usec: K4.span compares it to the run's
+// last time). A detail gives each sample's stamp in microseconds and then the seconds since the first estimator_status stamp, so it can be set against the
+// run's own trace (log stamp = boot_end_time_usec + trace seconds * 1e6; run.yaml holds boot_end_time_usec).
+// SOURCES, said as they are. The field NAMES and TYPES are the log's own format definitions (the `F` messages of the live and flight logs, written by PX4
+// v1.17.0: estimator_status, estimator_innovation_test_ratios, failsafe_flags), read by the reader; they are what the checker uses. The MEANING of the bits of
+// solution_status_flags is the PX4 v1.17 page https://docs.px4.io/v1.17/en/msg_docs/EstimatorStatus (found by a web search 2026-11-23 and fetched once), read
+// through a fetch tool that returns only a model-extracted SUMMARY of the page (the page text is cut at 39,938 characters), so no line here is a verbatim
+// quote: bit 0 attitude estimate good, 1 horizontal velocity good, 2 vertical velocity good, 3 horizontal position (relative) good, 4 horizontal position
+// (absolute) good, 5 vertical position (absolute) good, 6 vertical position above ground good, 7 constant position mode (no GPS or flow), 8 and 9 enough data
+// to enter a relative or an absolute position mode, 10 GPS glitch, 11 bad accelerometer data. Cross-check against the real logs' own values, which decompose
+// consistently: 128 = bit 7 (the first sample), 1152 = 7 + 10 (the first 0.02 s), 164 = 2 + 5 + 7, 165 = 0 + 2 + 5 + 7, 959 = 0 to 5 + 7 + 8 + 9 (settled on the
+// ground), 831 = 0 to 5 + 8 + 9 (airborne, constant-position mode left). No PX4 source was read.
+// ---------------------------------------------------------------------------
+inline constexpr uint64_t kEkfSettleUs = 5'000'000;
+inline constexpr uint16_t kSolutionRequiredBits = 0x003F;  // bits 0 to 5
+inline constexpr uint16_t kSolutionGpsGlitchBit = 1u << 10;
+inline constexpr uint16_t kSolutionBadAccelBit = 1u << 11;
+
+// failsafe_flags booleans that a HEADLESS flight test leaves true: the harness attaches no ground station, no remote control and sends no offboard stream,
+// and loads no mission. Each reason names the flag's meaning's source: the flag's NAME in the log's own `failsafe_flags` format definition (an `F` message;
+// it carries names and types only, no prose), and the harness fact (Interface's runner, tools/fc_link and scripts/fc-run.ps1: it sends HIL sensor
+// messages, actuator replies and a flight script over MAVLink; it attaches nothing else). No PX4 page was read for these four.
+struct HeadlessFlag {
+    std::string_view name;
+    std::string_view reason;
+};
+inline constexpr HeadlessFlag kHeadlessFailsafe[] = {
+    {"auto_mission_missing", "no mission is loaded: the flight is scripted over MAVLink, not an uploaded mission (the name is in the log's failsafe_flags format)"},
+    {"offboard_control_signal_lost", "the harness sends no continuous offboard setpoint stream (the name is in the log's failsafe_flags format)"},
+    {"manual_control_signal_lost", "no remote control is attached to the simulated autopilot (the name is in the log's failsafe_flags format)"},
+    {"gcs_connection_lost", "no ground station is attached; a heartbeat may reach the autopilot early in a run and then stop (the name is in the log's failsafe_flags format)"},
+};
+
+namespace detail {
+
+[[nodiscard]] inline std::string g4(double v) {
+    char buf[40];
+    std::snprintf(buf, sizeof buf, "%.4g", v);
+    return buf;
+}
+
+[[nodiscard]] inline std::string secs6(uint64_t us) {
+    std::string frac = std::to_string(us % 1000000);
+    frac.insert(0, 6 - frac.size(), '0');
+    return std::to_string(us / 1000000) + "." + frac;
+}
+
+// "7100000 us (7.000000 s after the first estimator_status stamp)": the stamp on the log's clock, then the same instant counted from the estimator's start.
+[[nodiscard]] inline std::string at_text(uint64_t stamp, uint64_t t0) {
+    return std::to_string(stamp) + " us (" + secs6(stamp >= t0 ? stamp - t0 : 0) + " s after the first estimator_status stamp)";
+}
+
+[[nodiscard]] inline std::string hex_text(uint64_t v) {
+    char buf[24];
+    std::snprintf(buf, sizeof buf, "0x%llx", static_cast<unsigned long long>(v));
+    return buf;
+}
+
+[[nodiscard]] inline const char* solution_bit_name(unsigned bit) {
+    static const char* const names[] = {"attitude",
+                                        "horizontal velocity",
+                                        "vertical velocity",
+                                        "horizontal position (relative)",
+                                        "horizontal position (absolute)",
+                                        "vertical position (absolute)"};
+    return bit < 6 ? names[bit] : "?";
+}
+
+[[nodiscard]] inline std::vector<CheckResult> check_ekf_health(const UlogResult& u) {
+    std::vector<CheckResult> out;
+    const auto add = [&](const char* id, Verdict v, std::string detail) { out.push_back(CheckResult{id, v, std::move(detail)}); };
+    const UlogResult::EkfStatusSeries& st = u.ekf_status;
+    const std::string window = std::to_string(kEkfSettleUs / 1000000) + " s";
+
+    // K4.ekf.fault
+    const char* status_why = nullptr;
+    std::string status_problem;
+    if (!st.present) {
+        status_why = "the log holds no estimator_status instance 0";
+    } else if (!st.problem.empty()) {
+        status_problem = "estimator_status cannot be read: " + st.problem;
+        status_why = status_problem.c_str();
+    } else if (st.samples.empty()) {
+        status_why = "the log holds no estimator_status sample with a nonzero stamp";
+    }
+    const uint64_t t0 = st.samples.empty() ? 0 : st.samples.front().t_us;
+    if (status_why != nullptr) {
+        add("K4.ekf.fault", Verdict::unchecked, status_why);
+    } else {
+        size_t bad = 0;
+        const UlogResult::EkfStatusSample* first_bad = nullptr;
+        for (const auto& s : st.samples)
+            if (s.fault_flags != 0) {
+                if (first_bad == nullptr) first_bad = &s;
+                ++bad;
+            }
+        if (first_bad != nullptr)
+            add("K4.ekf.fault", Verdict::fail,
+                "estimator_status.filter_fault_flags is " + hex_text(first_bad->fault_flags) + " at " + at_text(first_bad->t_us, t0) + "; " + std::to_string(bad) + " of " +
+                    std::to_string(st.samples.size()) + " samples have a fault flag set");
+        else
+            add("K4.ekf.fault", Verdict::pass, "estimator_status.filter_fault_flags is 0 in all " + std::to_string(st.samples.size()) + " samples (" + std::to_string(t0) + " to " +
+                                                   std::to_string(st.samples.back().t_us) + " us)");
+    }
+
+    // The three checks that start at the settle window need estimator_status's first stamp.
+    const auto anchored = [&](const char* id, const std::string& own_problem, bool own_present, const char* topic) -> bool {
+        if (status_why != nullptr) {
+            add(id, Verdict::unchecked, std::string("the settle window starts at the first estimator_status stamp, and: ") + status_why);
+            return false;
+        }
+        if (!own_present) {
+            add(id, Verdict::unchecked, std::string("the log holds no ") + topic + " instance 0");
+            return false;
+        }
+        if (!own_problem.empty()) {
+            add(id, Verdict::unchecked, std::string(topic) + " cannot be read: " + own_problem);
+            return false;
+        }
+        return true;
+    };
+    const auto no_sample_after = [&](const char* id, const char* topic, size_t n, uint64_t last_t) {
+        add(id, Verdict::unchecked,
+            std::string("the log holds no ") + topic + " sample after the " + window + " settle window (" + std::to_string(n) + " samples, the last at " + at_text(last_t, t0) +
+                "), before the " + window + " settle window is over");
+    };
+
+    // K4.ekf.solution
+    if (anchored("K4.ekf.solution", std::string(), true, "estimator_status")) {
+        size_t after = 0;
+        const UlogResult::EkfStatusSample* first_bad = nullptr;
+        const UlogResult::EkfStatusSample* last_bad_before = nullptr;
+        size_t bad = 0;
+        for (const auto& s : st.samples) {
+            const bool ok = (s.solution_flags & kSolutionRequiredBits) == kSolutionRequiredBits && (s.solution_flags & (kSolutionGpsGlitchBit | kSolutionBadAccelBit)) == 0;
+            if (s.t_us < t0 + kEkfSettleUs) {
+                if (!ok) last_bad_before = &s;
+                continue;
+            }
+            ++after;
+            if (!ok) {
+                if (first_bad == nullptr) first_bad = &s;
+                ++bad;
+            }
+        }
+        if (after == 0) {
+            no_sample_after("K4.ekf.solution", "estimator_status", st.samples.size(), st.samples.back().t_us);
+        } else if (first_bad != nullptr) {
+            std::string why;
+            for (unsigned b = 0; b < 6; ++b)
+                if ((first_bad->solution_flags & (1u << b)) == 0) why += (why.empty() ? "missing bit " : ", bit ") + std::to_string(b) + " (" + solution_bit_name(b) + ")";
+            if ((first_bad->solution_flags & kSolutionGpsGlitchBit) != 0) why += (why.empty() ? "" : "; ") + std::string("bit 10 (GPS glitch) is set");
+            if ((first_bad->solution_flags & kSolutionBadAccelBit) != 0) why += (why.empty() ? "" : "; ") + std::string("bit 11 (bad accelerometer data) is set");
+            add("K4.ekf.solution", Verdict::fail,
+                "estimator_status.solution_status_flags is " + hex_text(first_bad->solution_flags) + " at " + at_text(first_bad->t_us, t0) + ": " + why + "; " + std::to_string(bad) +
+                    " of " + std::to_string(after) + " samples after the " + window + " window do not hold bits 0 to 5 set and bits 10 and 11 clear");
+        } else {
+            add("K4.ekf.solution", Verdict::pass,
+                std::to_string(after) + " samples after the " + window + " window all hold bits 0 to 5 set and bits 10 and 11 clear; " +
+                    (last_bad_before != nullptr ? "the last sample before that did not was at " + at_text(last_bad_before->t_us, t0) : std::string("none before it failed either")));
+        }
+    }
+
+    // K4.ekf.innov
+    if (anchored("K4.ekf.innov", u.test_ratios.problem, u.test_ratios.present, "estimator_innovation_test_ratios")) {
+        const UlogResult::RatioSeries& rs = u.test_ratios;
+        size_t after = 0;
+        size_t bad_rows = 0;
+        bool have_first = false;
+        uint64_t first_t = 0;
+        std::string first_field;
+        double first_value = 0.0;
+        bool first_nan = false;
+        double max_after = -1.0;
+        std::string max_field;
+        uint64_t max_t = 0;
+        double max_before = -1.0;
+        std::string max_before_field;
+        uint64_t max_before_t = 0;
+        uint64_t last_t = 0;
+        for (size_t i = 0; i < rs.rows.size(); ++i) {
+            const uint64_t t = rs.t_us[i];
+            last_t = t;
+            const bool before = t < t0 + kEkfSettleUs;
+            if (!before) ++after;
+            bool row_bad = false;
+            for (size_t k = 0; k < rs.rows[i].size() && k < rs.names.size(); ++k) {
+                const double v = rs.rows[i][k];
+                const bool nan = !(v == v);
+                if (before) {
+                    if (!nan && v > max_before) {
+                        max_before = v;
+                        max_before_field = rs.names[k];
+                        max_before_t = t;
+                    }
+                    continue;
+                }
+                if (!nan && v > max_after) {
+                    max_after = v;
+                    max_field = rs.names[k];
+                    max_t = t;
+                }
+                if (nan || v > 1.0) {
+                    row_bad = true;
+                    if (!have_first) {
+                        have_first = true;
+                        first_t = t;
+                        first_field = rs.names[k];
+                        first_value = v;
+                        first_nan = nan;
+                    }
+                }
+            }
+            if (row_bad) ++bad_rows;
+        }
+        const std::string before_text = max_before >= 0.0 ? "; before the window the largest was " + max_before_field + " " + g4(max_before) + " at " +
+                                                                at_text(max_before_t, t0) + " (not judged)"
+                                                          : std::string();
+        if (after == 0) {
+            no_sample_after("K4.ekf.innov", "estimator_innovation_test_ratios", rs.rows.size(), last_t);
+        } else if (have_first) {
+            add("K4.ekf.innov", Verdict::fail,
+                "estimator_innovation_test_ratios." + first_field + (first_nan ? " is not a number at " : " is " + g4(first_value) + " at ") + at_text(first_t, t0) + ", over 1 (" +
+                    std::to_string(bad_rows) + " of " + std::to_string(after) + " samples after the " + window + " window have a ratio over 1 or not a number, this is the first; the largest is " +
+                    max_field + " " + g4(max_after) + " at " + at_text(max_t, t0) + ")" + before_text);
+        } else {
+            add("K4.ekf.innov", Verdict::pass,
+                std::to_string(after) + " samples after the " + window + " window, none over 1; the largest ratio is " + max_field + " " + g4(max_after) + " at " + at_text(max_t, t0) + before_text);
+        }
+    }
+
+    // K4.ekf.failsafe
+    if (anchored("K4.ekf.failsafe", u.failsafe.problem, u.failsafe.present, "failsafe_flags")) {
+        const UlogResult::FlagSeries& fs = u.failsafe;
+        size_t after = 0;
+        size_t bad_rows = 0;
+        bool have_first = false;
+        uint64_t first_t = 0;
+        std::string first_flag;
+        std::set<std::string> bad_flags;
+        std::set<std::string> headless_seen;
+        uint64_t last_t = 0;
+        for (size_t i = 0; i < fs.rows.size(); ++i) {
+            last_t = fs.t_us[i];
+            if (fs.t_us[i] < t0 + kEkfSettleUs) continue;
+            ++after;
+            bool row_bad = false;
+            for (size_t k = 0; k < fs.rows[i].size() && k < fs.names.size(); ++k) {
+                if (fs.rows[i][k] == 0) continue;
+                const bool headless = std::any_of(std::begin(kHeadlessFailsafe), std::end(kHeadlessFailsafe), [&](const HeadlessFlag& h) { return h.name == fs.names[k]; });
+                if (headless) {
+                    headless_seen.insert(fs.names[k]);
+                    continue;
+                }
+                row_bad = true;
+                bad_flags.insert(fs.names[k]);
+                if (!have_first) {
+                    have_first = true;
+                    first_t = fs.t_us[i];
+                    first_flag = fs.names[k];
+                }
+            }
+            if (row_bad) ++bad_rows;
+        }
+        std::string seen;
+        for (const std::string& n : headless_seen) seen += (seen.empty() ? "" : ", ") + n;
+        if (after == 0) {
+            no_sample_after("K4.ekf.failsafe", "failsafe_flags", fs.rows.size(), last_t);
+        } else if (have_first) {
+            std::string names;
+            for (const std::string& n : bad_flags) names += (names.empty() ? "" : ", ") + n;
+            add("K4.ekf.failsafe", Verdict::fail,
+                "failsafe_flags." + first_flag + " is true at " + at_text(first_t, t0) + ", and it is on no list (" + std::to_string(bad_rows) + " of " + std::to_string(after) +
+                    " samples after the " + window + " window have a flag outside the headless list set; flags: " + names + ")");
+        } else {
+            add("K4.ekf.failsafe", Verdict::pass,
+                std::to_string(after) + " samples after the " + window + " window; the only flags ever true are on the headless allow-list: " + (seen.empty() ? "none" : seen) +
+                    " (the list: auto_mission_missing, offboard_control_signal_lost, manual_control_signal_lost, gcs_connection_lost)");
+        }
+    }
+
+    // K4.ekf.log
+    {
+        static const char* const level_names[] = {"EMERG", "ALERT", "CRIT", "ERR", "WARNING", "NOTICE", "INFO", "DEBUG"};
+        std::map<char, size_t> counts;
+        const UlogResult::LogLine* bad_line = nullptr;
+        bool not_a_level = false;
+        size_t bad_count = 0;
+        for (const auto& l : u.log_lines) {
+            const char c = static_cast<char>(l.level);
+            ++counts[c];
+            if (c < '0' || c > '7' || c <= '3') ++bad_count;
+            if (bad_line == nullptr && (c < '0' || c > '7')) {
+                bad_line = &l;
+                not_a_level = true;
+            } else if (bad_line == nullptr && c <= '3') {
+                bad_line = &l;
+            }
+        }
+        std::string levels;
+        for (const auto& [c, n] : counts) levels += (levels.empty() ? "" : ", ") + std::string(1, c >= '0' && c <= '7' ? c : '?') + " x " + std::to_string(n);
+        if (bad_line != nullptr) {
+            const std::string at = std::to_string(bad_line->t_us) + " us";
+            if (not_a_level)
+                add("K4.ekf.log", Verdict::fail, "a logged string at " + at + " has level byte " + std::to_string(bad_line->level) + ", which is not a ULog level (the ASCII digits '0' to '7'); its " + std::to_string(bad_line->text_bytes) +
+                                                     " bytes of text are not quoted");
+            else
+                add("K4.ekf.log", Verdict::fail,
+                    "a logged string at " + at + " is level " + std::string(1, static_cast<char>(bad_line->level)) + " (" + level_names[bad_line->level - '0'] + "), at or above ERR (3): its " +
+                        std::to_string(bad_line->text_bytes) + " bytes of text are not quoted; read the log for them; " + std::to_string(bad_count) + " of " + std::to_string(u.log_lines.size()) + " logged strings are at ERR or above");
+        } else {
+            add("K4.ekf.log", Verdict::pass, std::to_string(u.log_lines.size()) + " logged strings, none at ERR (3) or above (levels: " + (levels.empty() ? "none" : levels) + "; the level byte is an ASCII digit, 6 = INFO, as the real logs hold)");
+        }
+    }
+    return out;
+}
+
+}  // namespace detail
+
 // ----- the folder check -------------------------------------------------------------------------------------------------------------
 
 inline Report check_run_folder(const RunFolder& folder) {
@@ -630,6 +965,8 @@ inline Report check_run_folder(const RunFolder& folder) {
             add("K4.params", Verdict::unchecked, "the log was not read to its end, so its parameters were not read");
             add("K4.cadence", Verdict::unchecked, "the log was not read to its end, so its samples were not read");
             add("K4.estimator", Verdict::unchecked, "the log was not read to its end, so its samples were not read");
+            for (const char* id : {"K4.ekf.fault", "K4.ekf.solution", "K4.ekf.innov", "K4.ekf.failsafe", "K4.ekf.log"})
+                add(id, Verdict::unchecked, "the log was not read to its end, so its samples were not read");
         } else {
             const bool hex40 = u.ver_sw.size() == 40 && std::all_of(u.ver_sw.begin(), u.ver_sw.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
             if (!u.has_ver_sw || !u.has_ver_sw_release) {
@@ -701,6 +1038,7 @@ inline Report check_run_folder(const RunFolder& folder) {
                     }
                 }
             }
+            for (CheckResult& c : detail::check_ekf_health(u)) rep.results.push_back(std::move(c));
             if (!folder.airframe_file.has_value()) {
                 add("K4.params", Verdict::unchecked, "no airframe file was given to the checker (the file the image holds; it is not in the record)");
             } else {
@@ -763,6 +1101,8 @@ inline Report check_run_folder(const RunFolder& folder) {
         add("K4.params", Verdict::unchecked, "no autopilot log was given to the checker");
         add("K4.cadence", Verdict::unchecked, "no autopilot log was given to the checker");
         add("K4.estimator", Verdict::unchecked, "no autopilot log was given to the checker");
+        for (const char* id : {"K4.ekf.fault", "K4.ekf.solution", "K4.ekf.innov", "K4.ekf.failsafe", "K4.ekf.log"})
+            add(id, Verdict::unchecked, "no autopilot log was given to the checker");
     }
 
     // K5: the copies match their hashes; the mode is one of two; a measured run names its box and tree.

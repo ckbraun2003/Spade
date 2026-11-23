@@ -20,6 +20,9 @@
 //   * the log holds at least one data message.
 // What it does NOT check: the field layouts of the logged data (a D body's size against its format), timestamps, parameter values, the firmware
 // version, that a message is the one PX4 should have logged. Those are K4's later steps.
+// Since K4.ekf: it also KEEPS the values of three topics (instance 0: estimator_status's two flag fields, every float of estimator_innovation_test_ratios,
+// every bool of failsafe_flags) and the level, stamp and text length of every logged string. Field names, types and offsets come from the log's own
+// format definitions (the `F` messages), never from PX4's source; a field of a type that is not a basic one makes the topic `problem`, not guessed.
 // Sources, said as they are: the page was read through a fetch tool that returns the specification only as a model-extracted SUMMARY (the first 39,938
 // characters of the page are navigation), so no sentence below is a verbatim quote, and the first read of it lacked the bodies of L, C, S and O, the sync
 // magic and the unknown-type rule. A second, targeted read of the same page (2026-11-22) gave, in that summary: C = log_level u8, tag u16, timestamp u64,
@@ -43,6 +46,12 @@
 #include <vector>
 
 namespace spade::fc {
+
+// The estimator-health topics the reader keeps the VALUES of (instance 0 only), for K4.ekf.* in fc_run_folder_check.hpp. Their field names and types are read
+// from the log's own format definitions (the `F` messages), never from this file: the names below are the topics'.
+inline constexpr std::string_view kEkfStatusTopic = "estimator_status";
+inline constexpr std::string_view kEkfRatiosTopic = "estimator_innovation_test_ratios";
+inline constexpr std::string_view kFailsafeTopic = "failsafe_flags";
 
 struct UlogResult {
     enum class Kind { well_formed, malformed, unread };
@@ -99,6 +108,43 @@ struct UlogResult {
         std::map<uint64_t, uint64_t> first_at_gap;
     };
     std::vector<Stream> streams;
+
+    // The estimator's health, from the VALUES of instance 0 of three topics and from the logged strings. A series is `present` when the log subscribes to the
+    // topic's instance 0; `problem` says why it cannot be read (a field missing or of another type, a type this reader does not read, a data message too
+    // short for the fields it needs); a series with a problem holds no samples. A sample is kept only when its timestamp is nonzero.
+    struct EkfStatusSample {
+        uint64_t t_us = 0;
+        uint32_t fault_flags = 0;     // estimator_status.filter_fault_flags
+        uint16_t solution_flags = 0;  // estimator_status.solution_status_flags
+    };
+    struct EkfStatusSeries {
+        bool present = false;
+        std::string problem;
+        std::vector<EkfStatusSample> samples;
+    };
+    struct RatioSeries {  // estimator_innovation_test_ratios: every float field, an array by index ("gravity[2]")
+        bool present = false;
+        std::string problem;
+        std::vector<std::string> names;
+        std::vector<uint64_t> t_us;
+        std::vector<std::vector<float>> rows;
+    };
+    struct FlagSeries {  // failsafe_flags: every bool field (the uint32 mode masks and the uint8 battery_warning are not flags)
+        bool present = false;
+        std::string problem;
+        std::vector<std::string> names;
+        std::vector<uint64_t> t_us;
+        std::vector<std::vector<uint8_t>> rows;
+    };
+    struct LogLine {  // an `L` or a `C` message: the level byte, the stamp, the length of the text (the text itself is never kept)
+        uint8_t level = 0;
+        uint64_t t_us = 0;
+        uint64_t text_bytes = 0;
+    };
+    EkfStatusSeries ekf_status;
+    RatioSeries test_ratios;
+    FlagSeries failsafe;
+    std::vector<LogLine> log_lines;
 };
 
 namespace ulog_detail {
@@ -139,6 +185,90 @@ namespace ulog_detail {
     return std::string("0x") + hex[u >> 4] + hex[u & 15];
 }
 
+// A format's fields with their byte offsets in a data message's body (after the 2-byte message id). A trailing run of padding is NOT stored in a data message,
+// so a body can end before the format does; a field is read only if its bytes are there.
+struct FieldLayout {
+    std::string type;  // "uint32_t", "float", "bool" ...
+    uint32_t count = 1;
+    std::string name;
+    size_t offset = 0;
+    size_t size = 0;  // of one element
+};
+
+[[nodiscard]] inline size_t basic_type_size(std::string_view t) {
+    if (t == "int8_t" || t == "uint8_t" || t == "bool" || t == "char") return 1;
+    if (t == "int16_t" || t == "uint16_t") return 2;
+    if (t == "int32_t" || t == "uint32_t" || t == "float") return 4;
+    if (t == "int64_t" || t == "uint64_t" || t == "double") return 8;
+    return 0;
+}
+
+// "name:type field;type[n] field;..." -> the fields. False, with the reason, when a field is of a type that is not a basic one (a nested message) or is
+// malformed: the offsets after it cannot be known.
+[[nodiscard]] inline bool parse_layout(std::string_view format, std::vector<FieldLayout>* out, std::string* why) {
+    const size_t colon = format.find(':');
+    if (colon == std::string_view::npos) {
+        *why = "the format has no fields";
+        return false;
+    }
+    size_t at = colon + 1;
+    size_t offset = 0;
+    while (at < format.size()) {
+        const size_t semi = format.find(';', at);
+        if (semi == std::string_view::npos) break;
+        const std::string_view decl = format.substr(at, semi - at);
+        at = semi + 1;
+        if (decl.empty()) continue;
+        const size_t space = decl.find(' ');
+        if (space == std::string_view::npos || space + 1 >= decl.size()) {
+            *why = "a field that is not `type name`";
+            return false;
+        }
+        FieldLayout f;
+        std::string_view type = decl.substr(0, space);
+        f.name = std::string(decl.substr(space + 1));
+        const size_t bracket = type.find('[');
+        if (bracket != std::string_view::npos) {
+            if (type.back() != ']' || bracket + 2 > type.size()) {
+                *why = "an array field with a malformed length";
+                return false;
+            }
+            uint32_t n = 0;
+            for (const char c : type.substr(bracket + 1, type.size() - bracket - 2)) {
+                if (c < '0' || c > '9') {
+                    *why = "an array field with a malformed length";
+                    return false;
+                }
+                n = n * 10 + static_cast<uint32_t>(c - '0');
+            }
+            f.count = n;
+            type = type.substr(0, bracket);
+        }
+        f.type = std::string(type);
+        f.size = basic_type_size(f.type);
+        if (f.size == 0 || f.count == 0) {
+            *why = "a field of a type this reader does not read (" + f.type + ")";
+            return false;
+        }
+        f.offset = offset;
+        offset += f.size * f.count;
+        out->push_back(std::move(f));
+    }
+    return true;
+}
+
+[[nodiscard]] inline uint64_t rd_uint(std::string_view b, size_t at, size_t size) {
+    uint64_t v = 0;
+    for (size_t i = 0; i < size; ++i) v |= static_cast<uint64_t>(static_cast<uint8_t>(b[at + i])) << (8 * i);
+    return v;
+}
+
+[[nodiscard]] inline const FieldLayout* field_named(const std::vector<FieldLayout>& fields, std::string_view name) {
+    for (const FieldLayout& f : fields)
+        if (f.name == name) return &f;
+    return nullptr;
+}
+
 }  // namespace ulog_detail
 
 [[nodiscard]] inline UlogResult read_ulog(std::string_view b) {
@@ -165,6 +295,16 @@ namespace ulog_detail {
     std::map<std::string, uint64_t> zero_by_format;
     std::map<uint16_t, uint8_t> subscribed_multi;
     std::map<uint16_t, UlogResult::Stream> stream_of;
+    std::map<std::string, std::string> format_text;  // format name -> its whole `name:field;...` text
+    // The estimator-health topics' instance-0 subscriptions: how to read their data messages.
+    struct Wanted {
+        enum class Kind { status, ratios, flags } kind = Kind::status;
+        std::vector<FieldLayout> fields;
+        size_t fault_at = 0;
+        size_t solution_at = 0;
+        std::vector<size_t> picked;  // ratios, flags: the float / bool fields, by index into `fields`
+    };
+    std::map<uint16_t, Wanted> wanted;
     r.header_start_us = rd64(b, 8);
     while (pos < b.size()) {
         if (b.size() - pos < 3) return bad("a message header is cut off by the end of the file", pos);
@@ -213,6 +353,7 @@ namespace ulog_detail {
             case 'F':
                 if (format_name_of(m).empty()) return bad("a format message that is not `name:field;...` with a valid name", pos);
                 formats.insert(format_name_of(m));
+                format_text[format_name_of(m)] = std::string(m);
                 {
                     const size_t colon = m.find(':');
                     const size_t semi = m.find(';', colon);
@@ -264,6 +405,45 @@ namespace ulog_detail {
                 subscribed_name[id] = std::string(m.substr(3));
                 subscribed_multi[id] = static_cast<uint8_t>(m[0]);
                 ++r.subscriptions;
+                if (m[0] == 0) {
+                    const std::string fname(m.substr(3));
+                    const bool is_status = fname == kEkfStatusTopic;
+                    const bool is_ratios = fname == kEkfRatiosTopic;
+                    const bool is_flags = fname == kFailsafeTopic;
+                    if (is_status || is_ratios || is_flags) {
+                        Wanted w;
+                        w.kind = is_status ? Wanted::Kind::status : (is_ratios ? Wanted::Kind::ratios : Wanted::Kind::flags);
+                        std::string why;
+                        const bool laid_out = parse_layout(format_text[fname], &w.fields, &why);
+                        if (laid_out && is_status) {
+                            const FieldLayout* fault = field_named(w.fields, "filter_fault_flags");
+                            const FieldLayout* solution = field_named(w.fields, "solution_status_flags");
+                            if (fault == nullptr || fault->type != "uint32_t" || fault->count != 1) {
+                                why = "the format has no uint32_t filter_fault_flags field";
+                            } else if (solution == nullptr || solution->type != "uint16_t" || solution->count != 1) {
+                                why = "the format has no uint16_t solution_status_flags field";
+                            } else {
+                                w.fault_at = fault->offset;
+                                w.solution_at = solution->offset;
+                            }
+                        } else if (laid_out) {
+                            const std::string_view want_type = is_ratios ? "float" : "bool";
+                            std::vector<std::string>& names = is_ratios ? r.test_ratios.names : r.failsafe.names;
+                            for (size_t i = 0; i < w.fields.size(); ++i) {
+                                const FieldLayout& f = w.fields[i];
+                                if (f.type != want_type || f.name.rfind("_padding", 0) == 0) continue;
+                                w.picked.push_back(i);
+                                for (uint32_t k = 0; k < f.count; ++k) names.push_back(f.count == 1 ? f.name : f.name + "[" + std::to_string(k) + "]");
+                            }
+                            if (w.picked.empty()) why = std::string("the format has no ") + std::string(want_type) + " field";
+                        }
+                        std::string& problem = is_status ? r.ekf_status.problem : (is_ratios ? r.test_ratios.problem : r.failsafe.problem);
+                        bool& present = is_status ? r.ekf_status.present : (is_ratios ? r.test_ratios.present : r.failsafe.present);
+                        present = true;
+                        if (!why.empty()) problem = why;
+                        wanted[id] = std::move(w);
+                    }
+                }
                 break;
             }
             case 'R':
@@ -283,6 +463,84 @@ namespace ulog_detail {
                 if (size < 10) return bad("a data message of " + std::to_string(size) + " bytes for a format that starts with a 64-bit timestamp, under 10", pos);
                 const uint64_t ts = rd64(m, 2);
                 ++r.timed_messages;
+                if (ts != 0) {
+                    const auto w = wanted.find(id);
+                    if (w != wanted.end()) {
+                        const std::string_view body = m.substr(2);  // the data after the message id: the timestamp is at offset 0
+                        const auto too_short = [&](std::string& problem) {
+                            if (problem.empty()) problem = "a data message is shorter than the fields the reader needs";
+                        };
+                        switch (w->second.kind) {
+                            case Wanted::Kind::status: {
+                                UlogResult::EkfStatusSeries& series = r.ekf_status;
+                                if (!series.problem.empty()) break;
+                                if (w->second.fault_at + 4 > body.size() || w->second.solution_at + 2 > body.size()) {
+                                    too_short(series.problem);
+                                    break;
+                                }
+                                UlogResult::EkfStatusSample sample;
+                                sample.t_us = ts;
+                                sample.fault_flags = static_cast<uint32_t>(rd_uint(body, w->second.fault_at, 4));
+                                sample.solution_flags = static_cast<uint16_t>(rd_uint(body, w->second.solution_at, 2));
+                                series.samples.push_back(sample);
+                                break;
+                            }
+                            case Wanted::Kind::ratios: {
+                                UlogResult::RatioSeries& series = r.test_ratios;
+                                if (!series.problem.empty()) break;
+                                std::vector<float> row;
+                                bool short_body = false;
+                                for (const size_t i : w->second.picked) {
+                                    const FieldLayout& f = w->second.fields[i];
+                                    for (uint32_t k = 0; k < f.count; ++k) {
+                                        const size_t at = f.offset + k * f.size;
+                                        if (at + 4 > body.size()) {
+                                            short_body = true;
+                                            break;
+                                        }
+                                        const uint32_t bits = rd32(body, at);
+                                        float value = 0.0F;
+                                        std::memcpy(&value, &bits, 4);
+                                        row.push_back(value);
+                                    }
+                                    if (short_body) break;
+                                }
+                                if (short_body) {
+                                    too_short(series.problem);
+                                    break;
+                                }
+                                series.t_us.push_back(ts);
+                                series.rows.push_back(std::move(row));
+                                break;
+                            }
+                            case Wanted::Kind::flags: {
+                                UlogResult::FlagSeries& series = r.failsafe;
+                                if (!series.problem.empty()) break;
+                                std::vector<uint8_t> row;
+                                bool short_body = false;
+                                for (const size_t i : w->second.picked) {
+                                    const FieldLayout& f = w->second.fields[i];
+                                    for (uint32_t k = 0; k < f.count; ++k) {
+                                        const size_t at = f.offset + k;
+                                        if (at + 1 > body.size()) {
+                                            short_body = true;
+                                            break;
+                                        }
+                                        row.push_back(body[at] != 0 ? 1 : 0);
+                                    }
+                                    if (short_body) break;
+                                }
+                                if (short_body) {
+                                    too_short(series.problem);
+                                    break;
+                                }
+                                series.t_us.push_back(ts);
+                                series.rows.push_back(std::move(row));
+                                break;
+                            }
+                        }
+                    }
+                }
                 if (ts == 0) {
                     ++r.zero_stamps;
                     ++zero_by_format[fname];
@@ -312,9 +570,11 @@ namespace ulog_detail {
             }
             case 'L':
                 if (size < 9) return bad("a logged string of " + std::to_string(size) + " bytes, under 9", pos);
+                r.log_lines.push_back({static_cast<uint8_t>(m[0]), rd64(m, 1), size - 9});
                 break;
             case 'C':
                 if (size < 11) return bad("a tagged logged string of " + std::to_string(size) + " bytes, under 11", pos);
+                r.log_lines.push_back({static_cast<uint8_t>(m[0]), rd64(m, 3), size - 11});
                 break;
             case 'S': {
                 bool magic = size == 8;
