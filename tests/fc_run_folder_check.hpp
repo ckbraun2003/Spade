@@ -91,11 +91,117 @@ struct Report {
 struct RunFolder {
     Files files;
     std::optional<std::string> autopilot_log;
+    // The run's simulated time at its last step, in microseconds: `last_time_usec` of the run's lockstep report (see last_time_usec_of). It is
+    // not in the record either, so the caller gives it; with none, K4.span stays unchecked.
+    std::optional<uint64_t> simulated_time_us;
+    // The airframe file the run was given (tools/fc_link/px4/airframes/<n>_..., the file the image holds), as text: with it K4.params compares the
+    // log's parameters to the file's `param set-default` lines. It is not in the record either; with none K4.params stays unchecked.
+    std::optional<std::string> airframe_file;
+    // The run's link step in microseconds (the period of the lockstep clock: 4,000 in the live test, `s.time_usec = k * 4000`). With it K4.cadence
+    // checks that the IMU stream's gaps are multiples of it; with none K4.cadence stays unchecked.
+    std::optional<uint64_t> link_step_us;
 
     // Constructors, not aggregate initialisation: gcc's -Werror=missing-field-initializers refuses `RunFolder{files}` with the log left out.
     RunFolder() = default;
-    RunFolder(Files f, std::optional<std::string> log = std::nullopt) : files(std::move(f)), autopilot_log(std::move(log)) {}
+    RunFolder(Files f, std::optional<std::string> log = std::nullopt, std::optional<uint64_t> sim_us = std::nullopt,
+              std::optional<std::string> airframe = std::nullopt, std::optional<uint64_t> step_us = std::nullopt)
+        : files(std::move(f)), autopilot_log(std::move(log)), simulated_time_us(sim_us), airframe_file(std::move(airframe)), link_step_us(step_us) {}
 };
+
+// The firmware the run is pinned to: PX4 v1.17.0, commit d6f12ad1c4f70ad3230afd7d86e971421e02fef4 (tools/fc_link/px4/Dockerfile:3 and the fc-links plan).
+// The log's `ver_sw_release` is PX4's own 0xMMmmPPtt (major 1, minor 0x11 = 17, patch 0, type 0xFF = release): read from the two real logs.
+inline constexpr std::string_view kPinnedPx4Commit = "d6f12ad1c4f70ad3230afd7d86e971421e02fef4";
+inline constexpr uint32_t kPinnedPx4Release = 0x011100FF;
+
+// The IMU stream whose cadence K4.cadence reads: PX4's `sensor_combined`, instance 0 (the topic the lockstep's HIL_SENSOR feeds, once per link step).
+inline constexpr std::string_view kCadenceTopic = "sensor_combined";
+
+// The estimator's heartbeat that K4.estimator reads: PX4's `ekf2_timestamps`, instance 0, a sample per EKF2 update (once per link step in a lockstep run).
+inline constexpr std::string_view kEstimatorTopic = "ekf2_timestamps";
+
+// "1.17.0 (release)" from a ver_sw_release value.
+[[nodiscard]] inline std::string release_text(uint32_t v) {
+    return std::to_string(v >> 24) + "." + std::to_string((v >> 16) & 0xFF) + "." + std::to_string((v >> 8) & 0xFF) + ((v & 0xFF) == 0xFF ? " (release)" : " (type " + std::to_string(v & 0xFF) + ")");
+}
+
+struct AirframeParam {
+    std::string name;
+    std::string value;  // the text, as the file wrote it
+};
+
+// The `param set-default NAME VALUE` and `param set NAME VALUE` lines of an airframe file (a shell script: other lines, comments and blanks are not
+// parameters). `unread` names the first parameter line whose value is not a plain decimal number, or that has no value.
+struct AirframeParams {
+    std::vector<AirframeParam> params;
+    std::string unread;
+};
+
+[[nodiscard]] inline bool plain_number(std::string_view t) {
+    size_t i = (!t.empty() && (t[0] == '-' || t[0] == '+')) ? 1 : 0;
+    bool digit = false, dot = false;
+    for (; i < t.size(); ++i) {
+        if (t[i] >= '0' && t[i] <= '9') digit = true;
+        else if (t[i] == '.' && !dot) dot = true;
+        else return false;
+    }
+    return digit;
+}
+
+[[nodiscard]] inline AirframeParams airframe_params_of(std::string_view text) {
+    AirframeParams out;
+    for (size_t at = 0; at < text.size();) {
+        const size_t nl = text.find('\n', at);
+        const size_t end = nl == std::string_view::npos ? text.size() : nl;
+        std::string_view line = text.substr(at, end - at);
+        at = end + 1;
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) line.remove_suffix(1);
+        while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) line.remove_prefix(1);
+        std::vector<std::string_view> w;
+        for (size_t p = 0; p < line.size();) {
+            while (p < line.size() && (line[p] == ' ' || line[p] == '\t')) ++p;
+            const size_t q = line.find_first_of(" \t", p);
+            const size_t e = q == std::string_view::npos ? line.size() : q;
+            if (e > p) w.push_back(line.substr(p, e - p));
+            p = e;
+        }
+        if (w.size() < 2 || w[0] != "param" || (w[1] != "set-default" && w[1] != "set")) continue;
+        if (w.size() != 4 || !plain_number(w[3])) {
+            if (out.unread.empty()) out.unread = w.size() >= 3 ? std::string(w[2]) : std::string("(no name)");
+            continue;
+        }
+        out.params.push_back({std::string(w[2]), std::string(w[3])});
+    }
+    return out;
+}
+
+// `last_time_usec: <n>` from a lockstep report's text (the report fc-live writes beside the record): the run's simulated time at its last step.
+[[nodiscard]] inline std::optional<uint64_t> last_time_usec_of(std::string_view report) {
+    constexpr std::string_view key = "last_time_usec:";
+    for (size_t at = 0; at < report.size();) {
+        const size_t nl = report.find('\n', at);
+        const size_t end = nl == std::string_view::npos ? report.size() : nl;
+        std::string_view line = report.substr(at, end - at);
+        if (line.substr(0, key.size()) == key) {
+            line.remove_prefix(key.size());
+            while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) line.remove_prefix(1);
+            while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.remove_suffix(1);
+            if (line.empty() || line.size() > 19) return std::nullopt;
+            uint64_t v = 0;
+            for (const char c : line) {
+                if (c < '0' || c > '9') return std::nullopt;
+                v = v * 10 + static_cast<uint64_t>(c - '0');
+            }
+            return v;
+        }
+        at = end + 1;
+    }
+    return std::nullopt;
+}
+
+// How far below the run's simulated time the log's last stamp may end: 25 steps of 4 ms. The logger may flush its last write behind the final step.
+// The two real runs end exactly on it (a gap of 0 us), so the bound is a guess of mine that the data do not test; the gap is always printed, so a
+// run that drifts shows it before it fails. Above the run's time is never allowed: a log cannot hold a time that had not come.
+inline constexpr uint64_t kLogEndsBeforeRunUs = 100'000;
 
 // ----- a small reader for the flat YAML the record uses -----------------------------------------------------------------------------
 
@@ -519,8 +625,144 @@ inline Report check_run_folder(const RunFolder& folder) {
     if (folder.autopilot_log.has_value()) {
         const UlogResult u = read_ulog(*folder.autopilot_log);
         add("K4.log", u.kind == UlogResult::Kind::well_formed ? Verdict::pass : (u.kind == UlogResult::Kind::unread ? Verdict::unchecked : Verdict::fail), u.detail);
+        if (u.kind != UlogResult::Kind::well_formed) {
+            add("K4.firmware", Verdict::unchecked, "the log was not read to its end, so its version was not read");
+            add("K4.params", Verdict::unchecked, "the log was not read to its end, so its parameters were not read");
+            add("K4.cadence", Verdict::unchecked, "the log was not read to its end, so its samples were not read");
+            add("K4.estimator", Verdict::unchecked, "the log was not read to its end, so its samples were not read");
+        } else {
+            const bool hex40 = u.ver_sw.size() == 40 && std::all_of(u.ver_sw.begin(), u.ver_sw.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
+            if (!u.has_ver_sw || !u.has_ver_sw_release) {
+                add("K4.firmware", Verdict::fail, std::string("the log carries no ") + (u.has_ver_sw ? "ver_sw_release" : "ver_sw") + " information message, so its firmware is not identified");
+            } else if (!hex40) {
+                add("K4.firmware", Verdict::fail, "ver_sw is not a 40-digit lower-case commit hash (" + std::to_string(u.ver_sw.size()) + " bytes)");
+            } else if (u.ver_sw != kPinnedPx4Commit) {
+                add("K4.firmware", Verdict::fail, "the firmware commit is " + u.ver_sw.substr(0, 8) + ", not the pinned " + std::string(kPinnedPx4Commit.substr(0, 8)));
+            } else if (u.ver_sw_release != kPinnedPx4Release) {
+                add("K4.firmware", Verdict::fail, "ver_sw_release is " + release_text(u.ver_sw_release) + ", not the pinned " + release_text(kPinnedPx4Release));
+            } else {
+                add("K4.firmware", Verdict::pass, "PX4 " + release_text(u.ver_sw_release) + ", commit " + u.ver_sw.substr(0, 8) + " = the pinned v1.17.0");
+            }
+
+            {
+                const UlogResult::Stream* imu = nullptr;
+                for (const UlogResult::Stream& s : u.streams)
+                    if (s.name == kCadenceTopic && s.multi_id == 0) imu = &s;
+                if (!folder.link_step_us.has_value() || *folder.link_step_us == 0) {
+                    add("K4.cadence", Verdict::unchecked, "no link step was given to the checker (the lockstep clock's period)");
+                } else if (imu == nullptr || imu->n < 2) {
+                    add("K4.cadence", Verdict::unchecked, "the log holds fewer than two " + std::string(kCadenceTopic) + " samples, so there is no cadence to read");
+                } else {
+                    const uint64_t step = *folder.link_step_us;
+                    const uint64_t expected = (imu->last_us - imu->first_us) / step + 1;
+                    const uint64_t missing = expected > imu->n ? expected - imu->n : 0;
+                    const std::string facts = std::string(kCadenceTopic) + " " + std::to_string(imu->n) + " samples, stamps " + std::to_string(imu->first_us) + " to " +
+                                              std::to_string(imu->last_us) + " us, gaps " + std::to_string(imu->min_gap_us) + " to " + std::to_string(imu->max_gap_us) +
+                                              " us; " + std::to_string(missing) + " of " + std::to_string(expected) + " link steps have no logged sample";
+                    if (!imu->monotone) {
+                        add("K4.cadence", Verdict::fail, "a " + std::string(kCadenceTopic) + " stamp is earlier than the one before it: " + facts);
+                    } else if (imu->repeats > 0) {
+                        add("K4.cadence", Verdict::fail, std::to_string(imu->repeats) + " " + std::string(kCadenceTopic) + " stamps repeat the one before: " + facts);
+                    } else if (imu->gcd_us % step != 0) {
+                        add("K4.cadence", Verdict::fail, "the gaps are not all multiples of the " + std::to_string(step) + " us link step (their greatest common divisor is " + std::to_string(imu->gcd_us) + " us): " + facts);
+                    } else {
+                        add("K4.cadence", Verdict::pass, "every gap is a multiple of the " + std::to_string(step) + " us link step (a gap of more than one step is a sample the log does not hold, counted below, not judged): " + facts);
+                    }
+                }
+            }
+            {
+                const UlogResult::Stream* ekf = nullptr;
+                for (const UlogResult::Stream& s : u.streams)
+                    if (s.name == kEstimatorTopic && s.multi_id == 0) ekf = &s;
+                const std::string topic(kEstimatorTopic);
+                if (!folder.link_step_us.has_value() || *folder.link_step_us == 0) {
+                    add("K4.estimator", Verdict::unchecked, "no link step was given to the checker (the lockstep clock's period)");
+                } else if (ekf == nullptr || ekf->n < 2) {
+                    add("K4.estimator", Verdict::unchecked, "the log holds fewer than two " + topic + " samples, so the estimator's steps cannot be read");
+                } else {
+                    const uint64_t step = *folder.link_step_us;
+                    const uint64_t expected = (ekf->last_us - ekf->first_us) / step + 1;
+                    const uint64_t missing = expected > ekf->n ? expected - ekf->n : 0;
+                    const std::string facts = topic + " " + std::to_string(ekf->n) + " samples, stamps " + std::to_string(ekf->first_us) + " to " + std::to_string(ekf->last_us) + " us";
+                    if (!ekf->monotone) {
+                        add("K4.estimator", Verdict::fail, "a " + topic + " stamp is earlier than the one before it: " + facts);
+                    } else if (ekf->repeats > 0) {
+                        add("K4.estimator", Verdict::fail, std::to_string(ekf->repeats) + " " + topic + " stamps repeat the one before: " + facts);
+                    } else if (ekf->gcd_us % step != 0) {
+                        add("K4.estimator", Verdict::fail, topic + " stamps are not on the " + std::to_string(step) + " us link step (the gaps' greatest common divisor is " + std::to_string(ekf->gcd_us) + " us): " + facts);
+                    } else if (ekf->max_gap_us > step) {
+                        uint64_t after = ~uint64_t{0};
+                        for (const auto& [gap, at] : ekf->first_at_gap)
+                            if (gap > step) after = std::min(after, at);
+                        add("K4.estimator", Verdict::fail, "the first missing step is " + std::to_string(after + step) + " us, the estimator has no sample there; " + std::to_string(missing) + " of " + std::to_string(expected) +
+                                                               " link steps have no sample (" + facts + ")");
+                    } else {
+                        add("K4.estimator", Verdict::pass, facts + ", one every " + std::to_string(step) + " us link step: " + std::to_string(ekf->n) + " of " + std::to_string(expected) + " steps have a sample");
+                    }
+                }
+            }
+            if (!folder.airframe_file.has_value()) {
+                add("K4.params", Verdict::unchecked, "no airframe file was given to the checker (the file the image holds; it is not in the record)");
+            } else {
+                const AirframeParams af = airframe_params_of(*folder.airframe_file);
+                std::string bad;
+                size_t same = 0;
+                for (const AirframeParam& p : af.params) {
+                    const auto it = u.params.find(p.name);
+                    if (it == u.params.end()) {
+                        bad += (bad.empty() ? "" : "; ") + p.name + " is not in the log's parameters";
+                        continue;
+                    }
+                    bool equal = false;
+                    std::string seen;
+                    if (it->second.is_float) {
+                        equal = std::strtof(p.value.c_str(), nullptr) == it->second.f;
+                        seen = std::to_string(it->second.f);
+                    } else {
+                        equal = p.value.find('.') == std::string::npos && std::strtol(p.value.c_str(), nullptr, 10) == it->second.i;
+                        seen = std::to_string(it->second.i);
+                    }
+                    if (equal) ++same;
+                    else bad += (bad.empty() ? "" : "; ") + p.name + " is " + seen + " in the log, " + p.value + " in the file";
+                }
+                if (af.params.empty() && af.unread.empty()) {
+                    add("K4.params", Verdict::unchecked, "the airframe file holds no `param set-default` line, so there is nothing to compare");
+                } else if (!bad.empty()) {
+                    add("K4.params", Verdict::fail, bad);
+                } else if (!af.unread.empty()) {
+                    add("K4.params", Verdict::unchecked, std::to_string(same) + " of the file's parameters equal the log's, but the line for " + af.unread + " has no plain number value and was not compared");
+                } else {
+                    add("K4.params", Verdict::pass, "all " + std::to_string(same) + " `param set-default` values of the airframe file equal the log's parameters (the log holds " + std::to_string(u.params.size()) + ")");
+                }
+            }
+        }
+        if (u.kind != UlogResult::Kind::well_formed) {
+            add("K4.span", Verdict::unchecked, "the log was not read to its end, so its stamps were not read");
+        } else if (!folder.simulated_time_us.has_value()) {
+            add("K4.span", Verdict::unchecked, "no simulated time was given (the run's lockstep report holds it as last_time_usec)");
+        } else if (!u.has_time) {
+            add("K4.span", Verdict::unchecked, "the log holds no data message with a nonzero timestamp, so there is no span to compare");
+        } else {
+            const uint64_t sim = *folder.simulated_time_us;
+            const std::string facts = "log stamps " + std::to_string(u.first_stamp_us) + " to " + std::to_string(u.last_stamp_us) + " us over " +
+                                      std::to_string(u.timed_messages - u.zero_stamps) + " messages; the run's last time " + std::to_string(sim) + " us; " +
+                                      std::to_string(u.zero_stamps) + " stamped 0 and left out" + (u.zero_formats.empty() ? "" : " (" + u.zero_formats + ")") + "; " +
+                                      std::to_string(u.untimed_messages) + " not timed" + (u.untimed_formats.empty() ? "" : " (" + u.untimed_formats + ")");
+            if (u.last_stamp_us > sim) {
+                add("K4.span", Verdict::fail, "the log's last stamp is " + std::to_string(u.last_stamp_us - sim) + " us AFTER the run's last time: " + facts);
+            } else if (sim - u.last_stamp_us > kLogEndsBeforeRunUs) {
+                add("K4.span", Verdict::fail, "the log ends " + std::to_string(sim - u.last_stamp_us) + " us before the run's last time (over " + std::to_string(kLogEndsBeforeRunUs) + " us): " + facts);
+            } else {
+                add("K4.span", Verdict::pass, "gap " + std::to_string(sim - u.last_stamp_us) + " us (the log's last stamp to the run's last time): " + facts);
+            }
+        }
     } else {
         add("K4.log", Verdict::unchecked, "no autopilot log was given to the checker (it lives beside the record, not in it)");
+        add("K4.span", Verdict::unchecked, "no autopilot log was given to the checker");
+        add("K4.firmware", Verdict::unchecked, "no autopilot log was given to the checker");
+        add("K4.params", Verdict::unchecked, "no autopilot log was given to the checker");
+        add("K4.cadence", Verdict::unchecked, "no autopilot log was given to the checker");
+        add("K4.estimator", Verdict::unchecked, "no autopilot log was given to the checker");
     }
 
     // K5: the copies match their hashes; the mode is one of two; a measured run names its box and tree.

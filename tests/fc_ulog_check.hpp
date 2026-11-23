@@ -32,11 +32,15 @@
 // A detail never quotes the file's bytes (a key, a value, a string): it names a byte offset, a message type and a size.
 // ---------------------------------------------------------------------------
 
+#include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <map>
+#include <numeric>
 #include <set>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace spade::fc {
 
@@ -52,12 +56,67 @@ struct UlogResult {
     uint64_t dropouts = 0;       // O messages
     uint64_t unknown_messages = 0;  // messages of a type the spec's list lacks, skipped (framing intact)
     std::string unknown_types;      // those types, once each, as 'Z' or 0x01
+    // The simulated-time span, read from the FIRST field of every data message whose format declares it `uint64_t timestamp` (the spec's rule for
+    // logged data). A stamp of 0 (a message published with the field never set) is counted per format and kept OUT of the span; a format whose first
+    // field is not that is counted as "not timed" and not read. The header's start time is NOT used (it is the logger's start, not the data's).
+    bool has_time = false;           // at least one nonzero stamp was read
+    uint64_t first_stamp_us = 0;     // the smallest nonzero stamp
+    uint64_t last_stamp_us = 0;      // the largest nonzero stamp
+    uint64_t timed_messages = 0;     // D messages of a format whose first field is `uint64_t timestamp`
+    uint64_t zero_stamps = 0;        // of those, stamped 0
+    std::string zero_formats;        // "name n, name n" for the formats that carried a 0 stamp
+    uint64_t untimed_messages = 0;   // D messages of a format whose first field is not `uint64_t timestamp`
+    std::string untimed_formats;     // those formats, once each
+    uint64_t header_start_us = 0;    // the header's u64 (reported, never used as the span's start)
+    // The firmware's identity, from the information messages `I`: `char[N] ver_sw` (the git commit) and `uint32_t ver_sw_release` (PX4's own encoding
+    // 0xMMmmPPtt: major, minor, patch, release type 0xFF for a release; read from the real logs, not from the ULog page).
+    bool has_ver_sw = false;
+    std::string ver_sw;
+    bool has_ver_sw_release = false;
+    uint32_t ver_sw_release = 0;
+    // The parameters, from the parameter messages `P`: `float NAME` and `int32_t NAME` with a 4-byte value (other types are not kept).
+    struct Param {
+        bool is_float = false;
+        int32_t i = 0;
+        float f = 0.0F;
+    };
+    std::map<std::string, Param> params;
+    // The sample cadence: per subscription (one topic instance), the nonzero stamps of its timed data messages, in file order. `gcd_us` is the
+    // greatest common divisor of the gaps between consecutive stamps, so every gap is a multiple of a step exactly when gcd_us is.
+    struct Stream {
+        std::string name;        // the format's name
+        uint8_t multi_id = 0;    // the subscription's instance
+        uint64_t n = 0;          // samples (nonzero stamps)
+        uint64_t first_us = 0;
+        uint64_t last_us = 0;
+        uint64_t gcd_us = 0;     // 0 until two samples
+        uint64_t min_gap_us = ~uint64_t{0};
+        uint64_t max_gap_us = 0;
+        bool monotone = true;    // no stamp earlier than the one before it
+        uint64_t repeats = 0;    // gaps of 0 (a stamp repeated)
+        // For each distinct gap between consecutive stamps, the stamp it FOLLOWED the first time it occurred: so the first stamp after which a gap of
+        // a given size appears is known (the earliest missing step of a stream that should have none).
+        std::map<uint64_t, uint64_t> first_at_gap;
+    };
+    std::vector<Stream> streams;
 };
 
 namespace ulog_detail {
 
 [[nodiscard]] inline uint16_t rd16(std::string_view b, size_t at) {
     return static_cast<uint16_t>(static_cast<uint8_t>(b[at]) | (static_cast<uint16_t>(static_cast<uint8_t>(b[at + 1])) << 8));
+}
+
+[[nodiscard]] inline uint32_t rd32(std::string_view b, size_t at) {
+    uint32_t v = 0;
+    for (size_t i = 0; i < 4; ++i) v |= static_cast<uint32_t>(static_cast<uint8_t>(b[at + i])) << (8 * i);
+    return v;
+}
+
+[[nodiscard]] inline uint64_t rd64(std::string_view b, size_t at) {
+    uint64_t v = 0;
+    for (size_t i = 0; i < 8; ++i) v |= static_cast<uint64_t>(static_cast<uint8_t>(b[at + i])) << (8 * i);
+    return v;
 }
 
 [[nodiscard]] inline bool valid_format_name_char(char c) {
@@ -101,6 +160,12 @@ namespace ulog_detail {
     bool first = true;
     std::set<std::string> formats;
     std::map<uint16_t, bool> subscribed;
+    std::map<std::string, bool> timed;                 // format name -> its first field is `uint64_t timestamp`
+    std::map<uint16_t, std::string> subscribed_name;   // message id -> format name
+    std::map<std::string, uint64_t> zero_by_format;
+    std::map<uint16_t, uint8_t> subscribed_multi;
+    std::map<uint16_t, UlogResult::Stream> stream_of;
+    r.header_start_us = rd64(b, 8);
     while (pos < b.size()) {
         if (b.size() - pos < 3) return bad("a message header is cut off by the end of the file", pos);
         const size_t size = rd16(b, pos);
@@ -148,11 +213,39 @@ namespace ulog_detail {
             case 'F':
                 if (format_name_of(m).empty()) return bad("a format message that is not `name:field;...` with a valid name", pos);
                 formats.insert(format_name_of(m));
+                {
+                    const size_t colon = m.find(':');
+                    const size_t semi = m.find(';', colon);
+                    timed[format_name_of(m)] = m.substr(colon + 1, semi - colon - 1) == "uint64_t timestamp";
+                }
                 break;
             case 'I':
             case 'P':
                 if (size < 1 || m[0] == 0 || static_cast<size_t>(static_cast<uint8_t>(m[0])) + 1 > size)
                     return bad(std::string("an ") + type + " message whose key length is zero or runs past the message", pos);
+                {
+                    const std::string_view key = m.substr(1, static_cast<uint8_t>(m[0]));
+                    const std::string_view val = m.substr(1 + static_cast<uint8_t>(m[0]));
+                    if (type == 'I') {
+                        if (key.substr(0, 5) == "char[" && key.size() > 7 && key.substr(key.size() - 7) == " ver_sw") {
+                            r.has_ver_sw = true;
+                            r.ver_sw = std::string(val);
+                        } else if (key == "uint32_t ver_sw_release" && val.size() == 4) {
+                            r.has_ver_sw_release = true;
+                            r.ver_sw_release = rd32(val, 0);
+                        }
+                    } else if (val.size() == 4 && (key.substr(0, 6) == "float " || key.substr(0, 8) == "int32_t ")) {
+                        UlogResult::Param p;
+                        p.is_float = key[0] == 'f';
+                        if (p.is_float) {
+                            const uint32_t bits = rd32(val, 0);
+                            std::memcpy(&p.f, &bits, 4);
+                        } else {
+                            p.i = static_cast<int32_t>(rd32(val, 0));
+                        }
+                        r.params[std::string(key.substr(key.find(' ') + 1))] = p;
+                    }
+                }
                 break;
             case 'M':
                 if (size < 2 || m[1] == 0 || static_cast<size_t>(static_cast<uint8_t>(m[1])) + 2 > size)
@@ -168,6 +261,8 @@ namespace ulog_detail {
                 if (formats.count(std::string(m.substr(3))) == 0) return bad("a subscription (message id " + std::to_string(id) + ") to a format the file did not define", pos);
                 if (subscribed.count(id) != 0) return bad("message id " + std::to_string(id) + " is subscribed twice", pos);
                 subscribed[id] = true;
+                subscribed_name[id] = std::string(m.substr(3));
+                subscribed_multi[id] = static_cast<uint8_t>(m[0]);
                 ++r.subscriptions;
                 break;
             }
@@ -179,6 +274,40 @@ namespace ulog_detail {
                 const uint16_t id = rd16(m, 0);
                 if (subscribed.count(id) == 0) return bad("a data message for message id " + std::to_string(id) + ", which was not subscribed", pos);
                 ++r.data_messages;
+                const std::string& fname = subscribed_name[id];
+                if (!timed[fname]) {
+                    ++r.untimed_messages;
+                    if (r.untimed_formats.find(fname) == std::string::npos) r.untimed_formats += (r.untimed_formats.empty() ? "" : ", ") + fname;
+                    break;
+                }
+                if (size < 10) return bad("a data message of " + std::to_string(size) + " bytes for a format that starts with a 64-bit timestamp, under 10", pos);
+                const uint64_t ts = rd64(m, 2);
+                ++r.timed_messages;
+                if (ts == 0) {
+                    ++r.zero_stamps;
+                    ++zero_by_format[fname];
+                } else {
+                    if (!r.has_time || ts < r.first_stamp_us) r.first_stamp_us = ts;
+                    if (!r.has_time || ts > r.last_stamp_us) r.last_stamp_us = ts;
+                    r.has_time = true;
+                    UlogResult::Stream& st = stream_of[id];
+                    if (st.n == 0) {
+                        st.name = fname;
+                        st.multi_id = subscribed_multi[id];
+                        st.first_us = ts;
+                    } else if (ts < st.last_us) {
+                        st.monotone = false;
+                    } else {
+                        const uint64_t gap = ts - st.last_us;
+                        st.first_at_gap.emplace(gap, st.last_us);
+                        if (gap == 0) ++st.repeats;
+                        st.gcd_us = std::gcd(st.gcd_us, gap);
+                        st.min_gap_us = std::min(st.min_gap_us, gap);
+                        st.max_gap_us = std::max(st.max_gap_us, gap);
+                    }
+                    if (st.n == 0 || ts >= st.last_us) st.last_us = ts;
+                    ++st.n;
+                }
                 break;
             }
             case 'L':
@@ -205,6 +334,8 @@ namespace ulog_detail {
     }
     if (first) return bad("the file holds no messages after the header", 16);
     if (r.data_messages == 0) return bad("the log holds no data message", b.size());
+    for (auto& [id, st] : stream_of) r.streams.push_back(st);
+    for (const auto& [name, n] : zero_by_format) r.zero_formats += (r.zero_formats.empty() ? "" : ", ") + name + " " + std::to_string(n);
     if (r.unknown_messages > 0) {
         r.kind = UlogResult::Kind::unread;
         r.detail = "unread: unknown message type " + r.unknown_types + " (" + std::to_string(r.unknown_messages) +

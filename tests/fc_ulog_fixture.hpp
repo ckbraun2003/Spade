@@ -55,7 +55,7 @@ inline std::string keyed(const std::string& key, const std::string& value) {
 
 // A well-formed log: B first; two formats, info, a parameter with its default, a multi info; two subscriptions; logged data on both; a logged string,
 // a tagged one, a sync message and a dropout inside the data section. The indices let a test reach one message.
-enum Index : size_t { kB = 0, kFGyro, kFStatus, kInfoName, kInfoVer, kParam, kDefault, kMulti, kSubGyro, kSubStatus, kDataGyro0, kLogged, kTagged, kSync, kDropout, kDataStatus, kDataGyro1 };
+enum Index : size_t { kB = 0, kFGyro, kFStatus, kInfoName, kInfoVer, kInfoSw, kParam, kDefault, kMulti, kSubGyro, kSubStatus, kDataGyro0, kLogged, kTagged, kSync, kDropout, kDataStatus, kDataGyro1 };
 
 inline std::vector<Msg> good_messages() {
     std::vector<Msg> v;
@@ -63,9 +63,8 @@ inline std::vector<Msg> good_messages() {
     v.push_back({'F', "sensor_gyro:uint64_t timestamp;float[3] xyz;uint8_t[4] _padding0;"});
     v.push_back({'F', "vehicle_status:uint64_t timestamp;uint8_t arming_state;"});
     v.push_back({'I', keyed("char[3] sys_name", "PX4")});
-    std::string ver;
-    ver += std::string("\xFF\x02\x04\x01", 4);  // 0x010402FF, little-endian: version 1.4.2, release
-    v.push_back({'I', keyed("uint32_t ver_sw_release", ver)});
+    v.push_back({'I', keyed("uint32_t ver_sw_release", std::string("\xFF\x00\x11\x01", 4))});  // 0x011100FF, little-endian: 1.17.0, release
+    v.push_back({'I', keyed("char[40] ver_sw", "d6f12ad1c4f70ad3230afd7d86e971421e02fef4")});    // the pinned commit
     v.push_back({'P', keyed("int32_t SYS_AUTOSTART", std::string("\x92\x27\x00\x00", 4))});
     std::string q(1, '\x03');
     q += keyed("float MC_ROLL_P", std::string("\x00\x00\xC0\x40", 4));
