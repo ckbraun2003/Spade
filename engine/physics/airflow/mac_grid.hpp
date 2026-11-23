@@ -115,6 +115,17 @@ template <class Vec>
     return {};
 }
 
+// RED stubs (O193, the lead: no CPU path may crash): the guard every Result-returning function that allocates runs its body in, and the test seam that
+// makes it act as the machine refusing any allocation over a limit.
+class ScopedAllocationLimit {
+public:
+    explicit ScopedAllocationLimit(uint64_t) noexcept {}
+};
+template <class T, class F>
+[[nodiscard]] Result<T> allocating(std::string_view, uint64_t, F&& body) {
+    return body();
+}
+
 // The bytes of a grid's u, v, w and p, in 64 bits, for a shape check_shape()
 // takes (past its cell cap the products can wrap).
 [[nodiscard]] inline uint64_t grid_bytes(const GridShape& s) noexcept {
