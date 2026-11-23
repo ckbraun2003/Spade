@@ -108,7 +108,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $Build 'CTestTestfile.cmake'))) {
 if (-not (Get-Command ctest -ErrorAction SilentlyContinue)) { Finish 'FAIL' 1 @('ctest is not on PATH') }
 
 # 2: the container. The last line it printed is the reason when it fails.
-$px4Extra = if ($PublishOffboard) { @('-PublishOffboard') } else { @() }
+$px4Extra = @(if ($PublishOffboard) { '-PublishOffboard' })  # always an array: a one-element array out of a bare if is unrolled to a string, and splatting a string fails
 $px4Out = @(& $ps -NoProfile -ExecutionPolicy Bypass -File $Px4Script -RunId $RunId -HostAddress $HostAddress -OutDir $out @px4Extra 2>&1 | ForEach-Object { "$_" })
 $px4Code = $LASTEXITCODE
 if ($px4Code -ne 0) {
