@@ -25,6 +25,7 @@
 // The checks that need what the record does not hold are reported `unchecked` with their reason, so one cannot go quiet unnoticed:
 //   K4.ekf.*       the estimator's own health from the autopilot log (fault flags, solution bits, innovation test ratios, failsafe flags, log levels): see
 //                  the block above check_run_folder
+//   K4.sensors.gap the baro and the magnetometer keep publishing (their gaps against a bar, the lead-in and the tail counted): see the block above check_run_folder
 //   K4.log         the autopilot log past its header: time span, firmware version, parameter hash (its FRAMING is checked when a log is given:
 //                  fc_ulog_check.hpp, "well-formed"; with no log given it stays unchecked)
 //   K6.recount     the overrun recount: it needs per-tick costs, and the record has none (measured mode; costs.yaml is phase 2)
@@ -582,6 +583,33 @@ inline constexpr HeadlessFlag kHeadlessFailsafe[] = {
     {"gcs_connection_lost", "no ground station is attached; a heartbeat may reach the autopilot early in a run and then stop (the name is in the log's failsafe_flags format)"},
 };
 
+// ---------------------------------------------------------------------------
+// K4.sensors.gap -- the autopilot's own sensors keep publishing. PX4's baro (`vehicle_air_data`) and magnetometer (`vehicle_magnetometer`), instance 0, are
+// logged when they publish; a sensor that stops publishing for seconds is what PX4's validators report as "STALE" at ERROR level (the ERR lines K4.ekf.log
+// fails on in both real flights), and a gap is visible in the log before and without any ERR line (dry run 4b's 21.84 s ground gap in the baro raised none).
+// Each sensor is judged on the MAXIMUM gap between consecutive samples, from the topic's own `timestamp` field (the log's clock), against a bar; a gap
+// must be OVER the bar to fail (exactly the bar passes). The first sample counts too: the LEAD-IN, from the first estimator_status stamp to the sample, is a
+// gap, and so is the TAIL, from the last sample to the last estimator_status stamp (a sample before the first stamp, or after the last, leaves 0). A sensor
+// the log never publishes is `unchecked`, naming the topic, never a pass; so is a log with no estimator_status to count the lead-in and the tail from.
+//
+// WHERE THE BARS COME FROM (2026-11-23). Interface proposed them (100 ms for the baro, 250 ms for the magnetometer). The four real logs on hand
+// (fc-live-1 and fc-live-2, 40 s on the ground; dry runs 3 and 4b, full flights), measured by this checker's own reader, show them sitting above every healthy
+// gap and below every failing one:
+//   healthy   live baro: every gap 52 ms; live magnetometer: alternating 60 and 76 ms (live-1), 28 and 108 ms (live-2)
+//             flights' regular stretches: baro 60 ms; magnetometer alternating 8 and 132 ms (dry3), 12 and 128 ms (dry4b)
+//   failing   flights' baro: every other gap is 180 ms or more (180 ms up to 16.68 s in dry3; 240 ms up to 21.84 s in dry4b)
+//             flights' magnetometer: one gap each, 18.19 s (dry3) and 18.2 s (dry4b)
+// So the baro bar is 1.7 times the largest healthy gap and the magnetometer bar 1.9 times; there is no gap between 60 and 180 ms (baro) or 132 ms and 18 s
+// (magnetometer) in these logs to say where inside the span the bar should be, only that it is above the healthy cadence. The magnetometer's cadence differs
+// between the two worlds (alternating pairs), which is why the MAXIMUM gap is judged, not a median or a period. No settle window: the live logs are regular
+// from their first sample. The flights' cause is Interface's to test (zero-noise baro and magnetometer readings repeating bit for bit at rest, so PX4 had
+// nothing new to publish; interface/sensor-noise); this check only sees the gap.
+// ---------------------------------------------------------------------------
+inline constexpr std::string_view kAirDataTopic = "vehicle_air_data";
+inline constexpr std::string_view kMagnetometerTopic = "vehicle_magnetometer";
+inline constexpr uint64_t kAirDataMaxGapUs = 100'000;
+inline constexpr uint64_t kMagnetometerMaxGapUs = 250'000;
+
 namespace detail {
 
 [[nodiscard]] inline std::string g4(double v) {
@@ -866,6 +894,108 @@ namespace detail {
     return out;
 }
 
+// "5944000 us (5.4 s after ...)", or "... s before ..." when the stamp is earlier than the first estimator_status stamp (a sensor's first sample can be).
+[[nodiscard]] inline std::string at_text_signed(uint64_t stamp, uint64_t t0) {
+    if (stamp >= t0) return at_text(stamp, t0);
+    return std::to_string(stamp) + " us (" + secs6(t0 - stamp) + " s before the first estimator_status stamp)";
+}
+
+[[nodiscard]] inline CheckResult check_sensor_gaps(const UlogResult& u) {
+    struct Sensor {
+        std::string_view topic;
+        uint64_t bar_us;
+    };
+    const Sensor sensors[] = {{kAirDataTopic, kAirDataMaxGapUs}, {kMagnetometerTopic, kMagnetometerMaxGapUs}};
+    const auto result = [](Verdict v, std::string d) { return CheckResult{"K4.sensors.gap", v, std::move(d)}; };
+    const UlogResult::EkfStatusSeries& st = u.ekf_status;
+    if (!st.present) return result(Verdict::unchecked, "the log holds no estimator_status instance 0, so the lead-in and the tail of the sensors' samples cannot be counted");
+    if (!st.problem.empty()) return result(Verdict::unchecked, "estimator_status cannot be read, so the lead-in and the tail of the sensors' samples cannot be counted: " + st.problem);
+    if (st.samples.empty()) return result(Verdict::unchecked, "the log holds no estimator_status sample, so the lead-in and the tail of the sensors' samples cannot be counted");
+    const uint64_t t0 = st.samples.front().t_us;
+    const uint64_t t_end = st.samples.back().t_us;
+
+    enum class Kind { gap, lead_in, tail };
+    struct Gap {
+        uint64_t after_us = 0;  // where it starts: the sample before a gap, the first estimator_status stamp for a lead-in, the last sample for a tail
+        uint64_t len_us = 0;
+        Kind kind = Kind::gap;
+    };
+    const auto short_text = [&](const Gap& g) {
+        switch (g.kind) {
+            case Kind::lead_in: return "a lead-in of " + std::to_string(g.len_us) + " us (the first sample is " + std::to_string(g.len_us) + " us after the first estimator_status stamp)";
+            case Kind::tail: return "a tail of " + std::to_string(g.len_us) + " us (the last sample is " + std::to_string(g.len_us) + " us before the last estimator_status stamp)";
+            case Kind::gap: break;
+        }
+        return "a gap of " + std::to_string(g.len_us) + " us after the sample at " + at_text_signed(g.after_us, t0);
+    };
+
+    std::vector<std::string> lines;
+    std::vector<std::string> missing;
+    bool any_fail = false;
+    for (const Sensor& s : sensors) {
+        const std::string name(s.topic);
+        const UlogResult::Stream* stream = nullptr;
+        for (const UlogResult::Stream& x : u.streams)
+            if (x.name == s.topic && x.multi_id == 0) stream = &x;
+        if (stream == nullptr) {
+            missing.push_back("the log holds no " + name + " instance 0 (a sensor that never publishes is not a pass)");
+            continue;
+        }
+        if (!stream->monotone) {
+            any_fail = true;
+            lines.push_back(name + ": a stamp is earlier than the one before it (the log's clock went backwards), so its gaps cannot be read");
+            continue;
+        }
+        std::vector<Gap> over;
+        Gap interior;
+        Gap largest;
+        const auto consider = [&](const Gap& g) {
+            if (g.len_us > largest.len_us) largest = g;
+            if (g.len_us > s.bar_us) over.push_back(g);
+        };
+        for (const auto& [len, after] : stream->first_at_gap) {
+            const Gap g{after, len, Kind::gap};
+            if (g.len_us > interior.len_us) interior = g;
+            consider(g);
+        }
+        const Gap lead{t0, stream->first_us > t0 ? stream->first_us - t0 : 0, Kind::lead_in};
+        const Gap tail{stream->last_us, t_end > stream->last_us ? t_end - stream->last_us : 0, Kind::tail};
+        consider(lead);
+        consider(tail);
+        const std::string bar = std::to_string(s.bar_us);
+        if (over.empty()) {
+            lines.push_back(name + ": " + std::to_string(stream->n) + " samples, largest gap " + std::to_string(interior.len_us) + " us" +
+                            (interior.len_us > 0 ? " after the sample at " + at_text_signed(interior.after_us, t0) : std::string()) + ", lead-in " + std::to_string(lead.len_us) +
+                            " us, tail " + std::to_string(tail.len_us) + " us, all at most " + bar + " us");
+            continue;
+        }
+        any_fail = true;
+        const Gap* first = &over.front();
+        for (const Gap& g : over)
+            if (g.after_us < first->after_us) first = &g;
+        std::string line = name + ": ";
+        switch (first->kind) {
+            case Kind::lead_in:
+                line += "the first sample is at " + at_text_signed(stream->first_us, t0) + ", " + std::to_string(first->len_us) + " us after the first estimator_status stamp, over the " + bar + " us bar";
+                break;
+            case Kind::tail:
+                line += "the last sample is at " + at_text_signed(stream->last_us, t0) + ", " + std::to_string(first->len_us) + " us before the last estimator_status stamp, over the " + bar + " us bar";
+                break;
+            case Kind::gap:
+                line += "a gap of " + std::to_string(first->len_us) + " us after the sample at " + at_text_signed(first->after_us, t0) + " is over the " + bar + " us bar";
+                break;
+        }
+        if (largest.len_us != first->len_us || largest.after_us != first->after_us || largest.kind != first->kind) line += "; the largest is " + short_text(largest);
+        lines.push_back(line);
+    }
+    std::string detail;
+    for (const std::string& l : lines) detail += (detail.empty() ? "" : "; ") + l;
+    for (const std::string& m : missing) detail += (detail.empty() ? "" : "; ") + m;
+    if (any_fail) return result(Verdict::fail, detail);
+    if (!missing.empty()) return result(Verdict::unchecked, detail);
+    return result(Verdict::pass, detail);
+}
+
 }  // namespace detail
 
 // ----- the folder check -------------------------------------------------------------------------------------------------------------
@@ -965,7 +1095,7 @@ inline Report check_run_folder(const RunFolder& folder) {
             add("K4.params", Verdict::unchecked, "the log was not read to its end, so its parameters were not read");
             add("K4.cadence", Verdict::unchecked, "the log was not read to its end, so its samples were not read");
             add("K4.estimator", Verdict::unchecked, "the log was not read to its end, so its samples were not read");
-            for (const char* id : {"K4.ekf.fault", "K4.ekf.solution", "K4.ekf.innov", "K4.ekf.failsafe", "K4.ekf.log"})
+            for (const char* id : {"K4.ekf.fault", "K4.ekf.solution", "K4.ekf.innov", "K4.ekf.failsafe", "K4.ekf.log", "K4.sensors.gap"})
                 add(id, Verdict::unchecked, "the log was not read to its end, so its samples were not read");
         } else {
             const bool hex40 = u.ver_sw.size() == 40 && std::all_of(u.ver_sw.begin(), u.ver_sw.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
@@ -1039,6 +1169,7 @@ inline Report check_run_folder(const RunFolder& folder) {
                 }
             }
             for (CheckResult& c : detail::check_ekf_health(u)) rep.results.push_back(std::move(c));
+            rep.results.push_back(detail::check_sensor_gaps(u));
             if (!folder.airframe_file.has_value()) {
                 add("K4.params", Verdict::unchecked, "no airframe file was given to the checker (the file the image holds; it is not in the record)");
             } else {
@@ -1101,7 +1232,7 @@ inline Report check_run_folder(const RunFolder& folder) {
         add("K4.params", Verdict::unchecked, "no autopilot log was given to the checker");
         add("K4.cadence", Verdict::unchecked, "no autopilot log was given to the checker");
         add("K4.estimator", Verdict::unchecked, "no autopilot log was given to the checker");
-        for (const char* id : {"K4.ekf.fault", "K4.ekf.solution", "K4.ekf.innov", "K4.ekf.failsafe", "K4.ekf.log"})
+        for (const char* id : {"K4.ekf.fault", "K4.ekf.solution", "K4.ekf.innov", "K4.ekf.failsafe", "K4.ekf.log", "K4.sensors.gap"})
             add(id, Verdict::unchecked, "no autopilot log was given to the checker");
     }
 
