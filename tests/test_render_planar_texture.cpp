@@ -305,3 +305,45 @@ TEST(PlanarTexture, AttachTerrainPutsTheMapsImageAtItsExtentWhenAskedAndLeavesTh
     EXPECT_TRUE(at(54, 86).b > 120 && at(54, 86).r < 40 && at(54, 86).g < 40) << "south-west: blue";
     EXPECT_TRUE(at(106, 86).r > 120 && at(106, 86).g > 120 && at(106, 86).b < 40) << "south-east: yellow";
 }
+
+// The default flip (SP-4 branch 3): with the GL draw in, TerrainSpec::textured is true by default, so a map's image is drawn unless the caller asks for the flat colour. A terrain carries its
+// image or is not attached at all (the image must be 2 x 2 at least; REQ-G14: a missing map is like no call), so a textured terrain never meets a missing image.
+TEST(PlanarTexture, ATerrainIsTexturedByDefaultAndTheFlatColourIsOneFlagAway) {
+    EXPECT_TRUE(spade::render::TerrainSpec{}.textured);
+    spade::world::TerrainInput map;
+    map.nx = 8;
+    map.ny = 8;
+    map.extent = {-10.0, 10.0, -10.0, 10.0};
+    map.heights.assign(64u, 0.0f);
+    map.image.width = 2;
+    map.image.height = 2;
+    map.image.rgb.assign(12u, 120u);
+    const auto fresh = [] {
+        RenderScene scene;
+        scene.materials = {Material{}};
+        scene.bounds = {glm::vec3(-60.0f, -5.0f, -60.0f), glm::vec3(60.0f, 5.0f, 60.0f)};
+        return scene;
+    };
+    RenderScene by_default = fresh();
+    ASSERT_TRUE(spade::render::attach_terrain(by_default, map).has_value());
+    EXPECT_TRUE(by_default.planar_texture.has_value());
+    EXPECT_TRUE(by_default.statics.back().planar_textured);
+    RenderScene flat = fresh();
+    spade::render::TerrainSpec spec;
+    spec.textured = false;
+    ASSERT_TRUE(spade::render::attach_terrain(flat, map, spec).has_value());
+    EXPECT_FALSE(flat.planar_texture.has_value());
+    EXPECT_FALSE(flat.statics.back().planar_textured);
+    // a map whose image is missing or too small is refused whole, textured or not, and the scene is left as it was
+    spade::world::TerrainInput bare = map;
+    bare.image = {};
+    for (const bool textured : {false, true}) {
+        RenderScene scene = fresh();
+        spade::render::TerrainSpec ask;
+        ask.textured = textured;
+        EXPECT_FALSE(spade::render::attach_terrain(scene, bare, ask).has_value()) << "textured " << textured;
+        EXPECT_TRUE(scene.statics.empty());
+        EXPECT_TRUE(scene.meshes.empty());
+        EXPECT_FALSE(scene.planar_texture.has_value());
+    }
+}
