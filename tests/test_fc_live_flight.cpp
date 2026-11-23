@@ -66,10 +66,21 @@ const char* phase_name(FlightMission::Phase p) {
         case FlightMission::Phase::boot: return "boot";
         case FlightMission::Phase::arming: return "arming";
         case FlightMission::Phase::takeoff: return "takeoff";
+        case FlightMission::Phase::settle: return "settle";
         case FlightMission::Phase::hover: return "hover";
         case FlightMission::Phase::land: return "land";
+        case FlightMission::Phase::aborting: return "aborting";
         case FlightMission::Phase::done: return "done";
         case FlightMission::Phase::failed: return "failed";
+    }
+    return "?";
+}
+
+const char* abort_name(FlightMission::AbortOutcome a) {
+    switch (a) {
+        case FlightMission::AbortOutcome::none: return "none";
+        case FlightMission::AbortOutcome::landed_and_disarmed: return "landed_and_disarmed";
+        case FlightMission::AbortOutcome::expired: return "bound_expired";
     }
     return "?";
 }
@@ -202,6 +213,10 @@ TEST(FcLiveFlight, Px4FliesTheX500ThroughArmTakeoffHoverAndLand) {
     std::ostringstream text;
     text << "mission_phase: " << phase_name(mission.phase()) << "\n"
          << "mission_passed: " << (mission.passed() ? "yes" : "no") << "\n"
+         << "last_armed: " << (mission.last_armed() ? "yes" : "no") << "\n"
+         << "last_altitude_m: " << mission.last_altitude_m() << "\n"
+         << "landed: " << (mission.landed() ? "yes" : "no") << "\n"
+         << "abort_outcome: " << abort_name(mission.abort_outcome()) << "\n"
          << "sim_s: " << sim_s << "\n"
          << "wall_s: " << wall << "\n"
          << "boot_steps: " << link->report().boot_steps << "\n"
