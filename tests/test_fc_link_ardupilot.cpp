@@ -214,9 +214,19 @@ TEST(FcLinkArdupilotLink, OnePacketAdvancesTheHostOneImuPeriodAndTheReplyIsTheSt
     EXPECT_EQ(step->tick, 8u) << "250 Hz is 4 ms is 8 ticks of 500 us";
     EXPECT_EQ(r.host->tick(), 8u);
     EXPECT_NEAR(step->state.timestamp_s, 0.004, 1e-12) << "absolute seconds: the host's time at the end of the period";
-    EXPECT_NEAR(step->state.accel_frd[2], -9.80665, 1.0) << "at rest the accelerometer reads the support force: 1 g UP, which is -Z in FRD";
-    EXPECT_NEAR(step->state.position_ned[2], -r.world->rest_com_y, 0.05) << "down is negative above the origin: the centre of mass sits rest_com_y over the ground";
-    EXPECT_GT(step->state.quaternion_wxyz[0], 0.99) << "level, nose north: the attitude is (nearly) the identity";
+
+    // The vehicle starts touching the ground with no penetration, so the first period is a free fall (no support force yet: the accelerometer reads ~0); once the
+    // feet have taken the weight, at rest the accelerometer reads the support force.
+    std::optional<spade::fc_link::ArduPilotStep> rest;
+    for (uint32_t i = 2; i <= 50; ++i) {
+        const auto later = r.link->respond(*r.host, servo_packet(i, 250, 1000));
+        ASSERT_TRUE(later.has_value()) << later.error().context;
+        rest = *later;
+    }
+    ASSERT_TRUE(rest.has_value());
+    EXPECT_NEAR(rest->state.accel_frd[2], -9.80665, 1.0) << "at rest the accelerometer reads the support force: 1 g UP, which is -Z in FRD";
+    EXPECT_NEAR(rest->state.position_ned[2], -r.world->rest_com_y, 0.05) << "down is negative above the origin: the centre of mass sits rest_com_y over the ground";
+    EXPECT_GT(rest->state.quaternion_wxyz[0], 0.99) << "level, nose north: the attitude is (nearly) the identity";
 }
 
 TEST(FcLinkArdupilotLink, FullPulsesOnTheFourMotorsMakeTheVehicleClimb) {
