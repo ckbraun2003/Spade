@@ -94,6 +94,9 @@ struct UlogResult {
         uint64_t max_gap_us = 0;
         bool monotone = true;    // no stamp earlier than the one before it
         uint64_t repeats = 0;    // gaps of 0 (a stamp repeated)
+        // For each distinct gap between consecutive stamps, the stamp it FOLLOWED the first time it occurred: so the first stamp after which a gap of
+        // a given size appears is known (the earliest missing step of a stream that should have none).
+        std::map<uint64_t, uint64_t> first_at_gap;
     };
     std::vector<Stream> streams;
 };
@@ -296,6 +299,7 @@ namespace ulog_detail {
                         st.monotone = false;
                     } else {
                         const uint64_t gap = ts - st.last_us;
+                        st.first_at_gap.emplace(gap, st.last_us);
                         if (gap == 0) ++st.repeats;
                         st.gcd_us = std::gcd(st.gcd_us, gap);
                         st.min_gap_us = std::min(st.min_gap_us, gap);

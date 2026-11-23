@@ -154,7 +154,7 @@ TEST(FcRunFolder, TheGoodBudgetFolderPassesEveryImplementedCheckAndNamesWhatIsUn
         EXPECT_NE(c.verdict, Verdict::fail) << c.id << ": " << c.detail;
         EXPECT_NE(c.verdict, Verdict::absent) << c.id << ": " << c.detail;
     }
-    EXPECT_EQ(unchecked, (std::set<std::string>{"K4.log", "K4.span", "K4.firmware", "K4.params", "K4.cadence", "K6.recount", "K11.replay"})) << r.text();
+    EXPECT_EQ(unchecked, (std::set<std::string>{"K4.log", "K4.span", "K4.firmware", "K4.params", "K4.cadence", "K4.estimator", "K6.recount", "K11.replay"})) << r.text();
     for (const char* id : {"K1", "K2", "K3", "K5", "K6", "K7", "K9", "K10"}) {
         const auto* c = r.find(id, Verdict::pass);
         EXPECT_NE(c, nullptr) << id << " has no passing result\n" << r.text();
@@ -677,7 +677,7 @@ TEST(FcRunFolder, TheTraceAndCommandsOfCoresSampleRunAreRecomputedAndAgree) {
     std::set<std::string> unchecked;
     for (const auto& c : r.results)
         if (c.verdict == Verdict::unchecked) unchecked.insert(c.id);
-    EXPECT_EQ(unchecked, (std::set<std::string>{"K4.log", "K4.span", "K4.firmware", "K4.params", "K4.cadence", "K6.recount", "K11.replay"}));
+    EXPECT_EQ(unchecked, (std::set<std::string>{"K4.log", "K4.span", "K4.firmware", "K4.params", "K4.cadence", "K4.estimator", "K6.recount", "K11.replay"}));
 }
 
 TEST(FcRunFolder, TheLoaderReadsAFolderFromDiskAndTheVerdictIsTheSame) {
@@ -1216,6 +1216,92 @@ TEST(FcRunFolder, K4_TheCadenceIsUncheckedWhenItCannotBeRead) {
     EXPECT_NE(none.find("K4.cadence", Verdict::unchecked), nullptr) << none.text();
 }
 
+// K4.estimator: the estimator ran at every link step. PX4's `ekf2_timestamps` (instance 0) holds a sample per EKF2 update; in a lockstep run the update
+// is once per link step, so every step between its first and last stamp must have a sample. (sensor_combined's missing steps are information, K4.cadence.)
+namespace {
+
+[[nodiscard]] std::vector<ux::Msg> ekf_log(const std::vector<uint64_t>& stamps, uint8_t multi = 0) {
+    using namespace ux;
+    std::vector<Msg> v = good_messages();
+    v.insert(v.begin() + kFStatus + 1, Msg{'F', "ekf2_timestamps:uint64_t timestamp;int16_t gyro_timestamp_rel;"});
+    std::string a(1, static_cast<char>(multi));
+    put16(a, 6);
+    a += "ekf2_timestamps";
+    v.insert(v.begin() + kSubStatus + 1, Msg{'A', a});
+    for (const uint64_t t : stamps) v.push_back({'D', timed_d(6, t, 2)});
+    return v;
+}
+
+[[nodiscard]] std::pair<Verdict, std::string> estimator_of(const std::vector<ux::Msg>& v, std::optional<uint64_t> step = 4000) {
+    const Report r = spade::fc::check_run_folder(spade::fc::RunFolder{good_measured(), ux::assemble(v), std::nullopt, std::nullopt, step});
+    const auto* c = result_of(r, "K4.estimator");
+    return c != nullptr ? std::make_pair(c->verdict, c->detail) : std::make_pair(Verdict::absent, std::string("no K4.estimator row"));
+}
+
+}  // namespace
+
+TEST(FcRunFolder, K4_TheReaderNotesWhereEachKindOfGapFirstOccurs) {
+    const UlogResult read = read_msgs(ekf_log({4000, 8000, 16000, 20000, 32000, 36000}));
+    ASSERT_EQ(read.kind, UlogResult::Kind::well_formed) << read.detail;
+    const UlogResult::Stream* ekf = nullptr;
+    for (const auto& s : read.streams)
+        if (s.name == "ekf2_timestamps") ekf = &s;
+    ASSERT_NE(ekf, nullptr);
+    ASSERT_EQ(ekf->first_at_gap.size(), 3u);
+    EXPECT_EQ(ekf->first_at_gap.at(4000), 4000u) << "the first 4000 us gap follows the stamp 4000";
+    EXPECT_EQ(ekf->first_at_gap.at(8000), 8000u) << "the first 8000 us gap follows the stamp 8000";
+    EXPECT_EQ(ekf->first_at_gap.count(12000), 1u);
+    EXPECT_EQ(ekf->first_at_gap.at(12000), 20000u);
+}
+
+TEST(FcRunFolder, K4_TheEstimatorHasASampleAtEveryLinkStep) {
+    const auto r = estimator_of(ekf_log({4000, 8000, 12000, 16000, 20000, 24000}));
+    EXPECT_EQ(r.first, Verdict::pass) << r.second;
+    EXPECT_NE(r.second.find("ekf2_timestamps 6 samples, stamps 4000 to 24000 us, one every 4000 us link step: 6 of 6 steps"), std::string::npos) << r.second;
+    EXPECT_EQ(estimator_of(ekf_log({0, 4000, 8000})).first, Verdict::pass) << "a stamp of 0 is not a sample";
+    EXPECT_EQ(estimator_of(ekf_log({4000, 6000, 8000}), 2000).first, Verdict::pass) << "the step is the caller's";
+}
+
+TEST(FcRunFolder, K4_AMissingEstimatorStepFailsAndTheFirstIsNamed) {
+    auto r = estimator_of(ekf_log({4000, 8000, 16000, 20000}));
+    EXPECT_EQ(r.first, Verdict::fail);
+    EXPECT_NE(r.second.find("the first missing step is 12000 us"), std::string::npos) << r.second;
+    EXPECT_NE(r.second.find("1 of 5 link steps have no sample"), std::string::npos) << r.second;
+    r = estimator_of(ekf_log({4000, 12000, 16000, 28000}));
+    EXPECT_EQ(r.first, Verdict::fail);
+    EXPECT_NE(r.second.find("the first missing step is 8000 us"), std::string::npos) << "the earliest of two gaps: " << r.second;
+    EXPECT_NE(r.second.find("3 of 7 link steps have no sample"), std::string::npos) << r.second;
+    r = estimator_of(ekf_log({4000, 16000}));
+    EXPECT_EQ(r.first, Verdict::fail) << "a gap of three steps";
+    EXPECT_NE(r.second.find("the first missing step is 8000 us"), std::string::npos) << r.second;
+    EXPECT_NE(r.second.find("2 of 4 link steps have no sample"), std::string::npos) << r.second;
+}
+
+TEST(FcRunFolder, K4_TheEstimatorFailsWhenOffTheClockBackwardsOrRepeated) {
+    auto r = estimator_of(ekf_log({4000, 8000, 12001}));
+    EXPECT_EQ(r.first, Verdict::fail);
+    EXPECT_NE(r.second.find("not on the 4000 us link step"), std::string::npos) << r.second;
+    r = estimator_of(ekf_log({4000, 12000, 8000}));
+    EXPECT_EQ(r.first, Verdict::fail);
+    EXPECT_NE(r.second.find("earlier than the one before"), std::string::npos) << r.second;
+    r = estimator_of(ekf_log({4000, 4000, 8000}));
+    EXPECT_EQ(r.first, Verdict::fail);
+    EXPECT_NE(r.second.find("1 ekf2_timestamps stamps repeat"), std::string::npos) << r.second;
+}
+
+TEST(FcRunFolder, K4_TheEstimatorIsUncheckedWhenItIsNotThere) {
+    EXPECT_EQ(estimator_of(ekf_log({4000, 8000}), std::nullopt).first, Verdict::unchecked) << "no link step given";
+    EXPECT_EQ(estimator_of(ekf_log({4000, 8000}), 0).first, Verdict::unchecked) << "a step of 0";
+    EXPECT_EQ(estimator_of(ekf_log({4000})).first, Verdict::unchecked) << "one sample has no gap";
+    EXPECT_EQ(estimator_of(ux::good_messages()).first, Verdict::unchecked) << "the log holds no ekf2_timestamps";
+    EXPECT_EQ(estimator_of(ekf_log({4000, 8000}, 1)).first, Verdict::unchecked) << "only instance 1 is there; instance 0 is read";
+    std::vector<ux::Msg> unknown = ekf_log({4000, 8000});
+    unknown.insert(unknown.begin() + ux::kSubGyro, ux::Msg{'Z', "x"});
+    EXPECT_EQ(estimator_of(unknown).first, Verdict::unchecked) << "an unread log's samples are not read";
+    const Report none = spade::fc::check_run_folder(spade::fc::RunFolder{good_measured()});
+    EXPECT_NE(none.find("K4.estimator", Verdict::unchecked), nullptr) << none.text();
+}
+
 // A real PX4 log: SPADE_FC_ULOG names a .ulg file (for example one a live fc run left in px4-log/); unset, the case skips by name, so the 12 MB logs of
 // the live runs are never committed. It checks the reader against the real thing, including the message types and sizes the spec page extract lacked.
 TEST(FcRunFolder, TheRealPx4LogIsWellFormed) {
@@ -1280,6 +1366,10 @@ TEST(FcRunFolder, TheRealPx4LogCoversTheRunsSimulatedTime) {
     ASSERT_NE(cad, nullptr);
     std::cout << "K4.cadence: " << cad->detail << "\n";
     EXPECT_EQ(cad->verdict, Verdict::pass) << cad->detail;
+    const auto* est = result_of(folder, "K4.estimator");
+    ASSERT_NE(est, nullptr);
+    std::cout << "K4.estimator: " << est->detail << "\n";
+    EXPECT_EQ(est->verdict, Verdict::pass) << est->detail;
     const auto* params = result_of(folder, "K4.params");
     ASSERT_NE(params, nullptr);
     std::cout << "K4.params: " << static_cast<int>(params->verdict) << " " << params->detail << "\n";

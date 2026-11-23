@@ -116,6 +116,9 @@ inline constexpr uint32_t kPinnedPx4Release = 0x011100FF;
 // The IMU stream whose cadence K4.cadence reads: PX4's `sensor_combined`, instance 0 (the topic the lockstep's HIL_SENSOR feeds, once per link step).
 inline constexpr std::string_view kCadenceTopic = "sensor_combined";
 
+// The estimator's heartbeat that K4.estimator reads: PX4's `ekf2_timestamps`, instance 0, a sample per EKF2 update (once per link step in a lockstep run).
+inline constexpr std::string_view kEstimatorTopic = "ekf2_timestamps";
+
 // "1.17.0 (release)" from a ver_sw_release value.
 [[nodiscard]] inline std::string release_text(uint32_t v) {
     return std::to_string(v >> 24) + "." + std::to_string((v >> 16) & 0xFF) + "." + std::to_string((v >> 8) & 0xFF) + ((v & 0xFF) == 0xFF ? " (release)" : " (type " + std::to_string(v & 0xFF) + ")");
@@ -626,6 +629,7 @@ inline Report check_run_folder(const RunFolder& folder) {
             add("K4.firmware", Verdict::unchecked, "the log was not read to its end, so its version was not read");
             add("K4.params", Verdict::unchecked, "the log was not read to its end, so its parameters were not read");
             add("K4.cadence", Verdict::unchecked, "the log was not read to its end, so its samples were not read");
+            add("K4.estimator", Verdict::unchecked, "the log was not read to its end, so its samples were not read");
         } else {
             const bool hex40 = u.ver_sw.size() == 40 && std::all_of(u.ver_sw.begin(), u.ver_sw.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
             if (!u.has_ver_sw || !u.has_ver_sw_release) {
@@ -663,6 +667,37 @@ inline Report check_run_folder(const RunFolder& folder) {
                         add("K4.cadence", Verdict::fail, "the gaps are not all multiples of the " + std::to_string(step) + " us link step (their greatest common divisor is " + std::to_string(imu->gcd_us) + " us): " + facts);
                     } else {
                         add("K4.cadence", Verdict::pass, "every gap is a multiple of the " + std::to_string(step) + " us link step (a gap of more than one step is a sample the log does not hold, counted below, not judged): " + facts);
+                    }
+                }
+            }
+            {
+                const UlogResult::Stream* ekf = nullptr;
+                for (const UlogResult::Stream& s : u.streams)
+                    if (s.name == kEstimatorTopic && s.multi_id == 0) ekf = &s;
+                const std::string topic(kEstimatorTopic);
+                if (!folder.link_step_us.has_value() || *folder.link_step_us == 0) {
+                    add("K4.estimator", Verdict::unchecked, "no link step was given to the checker (the lockstep clock's period)");
+                } else if (ekf == nullptr || ekf->n < 2) {
+                    add("K4.estimator", Verdict::unchecked, "the log holds fewer than two " + topic + " samples, so the estimator's steps cannot be read");
+                } else {
+                    const uint64_t step = *folder.link_step_us;
+                    const uint64_t expected = (ekf->last_us - ekf->first_us) / step + 1;
+                    const uint64_t missing = expected > ekf->n ? expected - ekf->n : 0;
+                    const std::string facts = topic + " " + std::to_string(ekf->n) + " samples, stamps " + std::to_string(ekf->first_us) + " to " + std::to_string(ekf->last_us) + " us";
+                    if (!ekf->monotone) {
+                        add("K4.estimator", Verdict::fail, "a " + topic + " stamp is earlier than the one before it: " + facts);
+                    } else if (ekf->repeats > 0) {
+                        add("K4.estimator", Verdict::fail, std::to_string(ekf->repeats) + " " + topic + " stamps repeat the one before: " + facts);
+                    } else if (ekf->gcd_us % step != 0) {
+                        add("K4.estimator", Verdict::fail, topic + " stamps are not on the " + std::to_string(step) + " us link step (the gaps' greatest common divisor is " + std::to_string(ekf->gcd_us) + " us): " + facts);
+                    } else if (ekf->max_gap_us > step) {
+                        uint64_t after = ~uint64_t{0};
+                        for (const auto& [gap, at] : ekf->first_at_gap)
+                            if (gap > step) after = std::min(after, at);
+                        add("K4.estimator", Verdict::fail, "the first missing step is " + std::to_string(after + step) + " us, the estimator has no sample there; " + std::to_string(missing) + " of " + std::to_string(expected) +
+                                                               " link steps have no sample (" + facts + ")");
+                    } else {
+                        add("K4.estimator", Verdict::pass, facts + ", one every " + std::to_string(step) + " us link step: " + std::to_string(ekf->n) + " of " + std::to_string(expected) + " steps have a sample");
                     }
                 }
             }
@@ -727,6 +762,7 @@ inline Report check_run_folder(const RunFolder& folder) {
         add("K4.firmware", Verdict::unchecked, "no autopilot log was given to the checker");
         add("K4.params", Verdict::unchecked, "no autopilot log was given to the checker");
         add("K4.cadence", Verdict::unchecked, "no autopilot log was given to the checker");
+        add("K4.estimator", Verdict::unchecked, "no autopilot log was given to the checker");
     }
 
     // K5: the copies match their hashes; the mode is one of two; a measured run names its box and tree.
