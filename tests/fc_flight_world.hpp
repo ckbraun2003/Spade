@@ -59,9 +59,11 @@ inline constexpr double kGroundAmslM = 488.0;
 inline constexpr double kHomeLat = 47.397742, kHomeLon = 8.545594;
 // Where each sensor sits in FlightWorld::bindings, for AutopilotLink's ExchangeConfig (the IMU is 0).
 inline constexpr uint32_t kBaroBinding = 1, kMagBinding = 2, kGnssBinding = 3;
-// The barometer's and the magnetometer's white noise. A real sensor never repeats a reading bit for bit, and PX4's sensor validators read a value that
-// repeats exactly as a FROZEN sensor (STALE: BARO #0 and #1 and MAG #0 in the logs of dry runs 3 and 4b, with the barometer's logged pressure identical for
-// 22 s at rest). The sigmas are the boot messages' own (fc_host::BootConfig: 1 Pa, 0.1 uT). RED: zero, the engine's default, until the test below passes.
+// The barometer's and the magnetometer's white noise, the X500 kit's own: the kit profile of tools/fc_link/sensor_profiles.hpp (MS5611 barometer 1.2 Pa,
+// IST8310 magnetometer 0.3 uT: the grades are that header's: the barometer figure RECALLED from the datasheet, the magnetometer figure ASSUMED equal to
+// one LSB), pinned equal to it by a test. White noise only: the profile's slow biases are left out so the hover offset can still be read. A real sensor never
+// repeats a reading bit for bit, and PX4's sensor validators read a value that repeats as a FROZEN sensor (STALE: BARO #0 and #1 and MAG #0 in the logs of
+// dry runs 3 and 4b, with the barometer's logged pressure identical for 22 s at rest). RED: zero, the engine's default, until the tests below pass.
 inline constexpr float kBaroSigmaPa = 0.0f;
 inline constexpr float kMagSigmaUt = 0.0f;
 

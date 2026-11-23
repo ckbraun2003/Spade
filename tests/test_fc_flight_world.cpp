@@ -15,6 +15,7 @@
 #include "analysis/case.hpp"
 #include "fc_flight_world.hpp"
 #include "fc_link/autopilot_link.hpp"
+#include "fc_link/sensor_profiles.hpp"
 
 namespace {
 
@@ -144,6 +145,16 @@ TEST(FcFlightWorld, TheBarometerAndMagnetometerGroupsReachHilSensorOnScheduleWit
     for (std::size_t i = 1; i < mag_at.size(); ++i) mag_gap = std::max(mag_gap, mag_at[i] - mag_at[i - 1]);
     EXPECT_EQ(baro_gap, 20000u) << "us between barometer groups, the worst of " << baro_at.size();
     EXPECT_LE(mag_gap, 12000u) << "us between magnetometer groups, the worst of " << mag_at.size();
+}
+
+// One source for the kit's sensor figures: the flight world's barometer and magnetometer noise are the kit profile's white sigmas, not numbers of their own.
+TEST(FcFlightWorld, TheBarometerAndMagnetometerNoiseAreTheKitProfilesWhiteSigmas) {
+    const auto kit = spade::fc_link::sensor_set(spade::fc_link::SensorProfile::kit, kDtNs, glm::vec3(20.0f, -40.0f, 5.0f), static_cast<float>(kGroundAmslM));
+    ASSERT_TRUE(kit.has_value()) << kit.error().context;
+    EXPECT_GT(kit->baro.sigma_p_pa, 0.0f);
+    EXPECT_GT(kit->mag.sigma_white_ut, 0.0f);
+    EXPECT_EQ(kBaroSigmaPa, kit->baro.sigma_p_pa);
+    EXPECT_EQ(kMagSigmaUt, kit->mag.sigma_white_ut);
 }
 
 TEST(FcFlightWorld, ACommonDutyControllerTakesTheX500ToTwoMetersAndHoldsItAtASaneDuty) {
