@@ -136,7 +136,7 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 if ($LASTEXITCODE -ne 0) { Fail "cmake --install --component editor failed (exit $LASTEXITCODE)" }
 
 $must = @('spade_sandbox.exe', 'spade_geo_fetch.exe', 'spade_part_import.exe', 'step_convert.py', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'VERSION', 'INSTALL.md', 'RELEASE_NOTES.md', 'SYSTEM_REQUIREMENTS.md',
-          'assets\library', 'assets\scenes', 'assets\worlds', 'assets\fonts\Inter-Regular.ttf', 'docs\user-guide\index.html')
+          'assets\library', 'assets\scenes', 'assets\worlds', 'assets\fonts\Inter-Regular.ttf', 'assets\models\x500_contact.model.yaml', 'docs\user-guide\index.html')
 $missing = @($must | Where-Object { -not (Test-Path -LiteralPath (Join-Path $stage $_)) })
 if (-not (Get-ChildItem -LiteralPath $stage -Filter 'vcruntime140*.dll' -ErrorAction SilentlyContinue)) { $missing += 'vcruntime140.dll (the MSVC runtime, app-local)' }
 if (-not (Get-ChildItem -LiteralPath (Join-Path $stage 'docs\user-guide') -Filter '*.pdf' -ErrorAction SilentlyContinue)) { $missing += 'docs\user-guide\*.pdf' }
