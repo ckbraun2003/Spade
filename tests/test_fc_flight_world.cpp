@@ -49,7 +49,7 @@ TEST(FcFlightWorld, ACommonDutyControllerTakesTheX500ToTwoMetersAndHoldsItAtASan
         const double err = target - alt;
         integral = std::clamp(integral + err * dt, -2.0, 2.0);
         duty = std::clamp(0.45 + 0.15 * err - 0.25 * vel + 0.05 * integral, 0.0, 1.0);
-        const auto omega = fcl::autopilot_duties_to_rotor_commands(chain, {duty, duty, duty, duty}, 1.225, 1.0);
+        const auto omega = fcl::autopilot_duties_to_rotor_commands(chain, std::array<double, 4>{duty, duty, duty, duty}, 1.225, 1.0);
         ASSERT_TRUE(omega.has_value()) << omega.error().context;
         ASSERT_TRUE(host->command(*omega).has_value());
         ASSERT_TRUE(host->advance_to(static_cast<uint64_t>(k) * kImuDivider * kDtNs).has_value());
