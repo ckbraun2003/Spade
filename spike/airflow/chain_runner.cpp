@@ -161,7 +161,13 @@ void record_entry_barrier(VkCommandBuffer cmd, VkPipelineStageFlags dst_stage, V
 // ---------------------------------------------------------------------------
 
 uint64_t runner_budget_bytes(compute::VulkanContext& ctx) {
-    return compute::vram_cap(ctx.memory_budget(), kRunnerReserveBytes, g_live_bytes.load());
+    return runner_budget_bytes(ctx, static_cast<int64_t>(kRunnerReserveBytes));
+}
+
+uint64_t runner_budget_bytes(compute::VulkanContext& ctx, int64_t reserve_bytes) {
+    const Result<uint64_t> reserve = compute::check_vram_reserve(reserve_bytes);
+    if (!reserve) return 0;  // an invalid reserve admits nothing; create() refuses it by name
+    return compute::vram_cap(ctx.memory_budget(), *reserve, g_live_bytes.load());
 }
 
 std::optional<uint32_t> choose_memory_type(const VkPhysicalDeviceMemoryProperties& props, uint32_t type_bits,
@@ -215,6 +221,9 @@ Result<std::unique_ptr<ChainRunner>> ChainRunner::create(compute::VulkanContext&
         }
     }
 
+    const Result<uint64_t> vram_reserve = compute::check_vram_reserve(desc.vram_reserve_bytes);
+    if (!vram_reserve) return refuse(vram_reserve.error());
+
     if (desc.push_bytes == 0 || desc.push_bytes % 4 != 0) {
         return refuse(Code::invalid_argument, "push_bytes " + std::to_string(desc.push_bytes) +
                                                   " must be a non-zero multiple of 4 (every dispatch pushes it)");
@@ -257,7 +266,7 @@ Result<std::unique_ptr<ChainRunner>> ChainRunner::create(compute::VulkanContext&
                                                   " buffers (device " + std::to_string(device_bytes) +
                                                   " + staging " + std::to_string(staging_bytes) + " + readback " +
                                                   std::to_string(desc.readback_bytes) + " bytes)",
-                                              total, ctx.memory_budget(), kRunnerReserveBytes, g_live_bytes.load(),
+                                              total, ctx.memory_budget(), *vram_reserve, g_live_bytes.load(),
                                               device);
         !ok) {
         return refuse(ok.error());

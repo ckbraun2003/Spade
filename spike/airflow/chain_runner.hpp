@@ -199,6 +199,10 @@ struct RunnerDesc {
     // beside a second fluid) on one context each hold their own. A name given is taken as it is, and the ledger refuses one
     // already held. A ledger belongs to one context, so runners on SEPARATE contexts do not sum.
     std::string vram_share{};
+    // The reserve this runner leaves free of the device's budget, in bytes: the named option vram_reserve_bytes (O193). The default is
+    // kRunnerReserveBytes (1 GiB, below); a run may LOWER it (the film runs ask 0.3 GiB), never under compute::kMinVramReserve, and a negative
+    // one is refused by name (compute::check_vram_reserve) before anything is allocated. Signed so a negative can be said.
+    int64_t vram_reserve_bytes = int64_t{1} << 30;
 };
 
 // One readback of a chain: after the chain's last dispatch, bytes [src_offset, src_offset + bytes) of buffer
@@ -215,15 +219,19 @@ struct ChainReadback {
 // renderer's textures first: 1 GiB until B7 measures the renderer during the
 // D1 film (plan B, the lead's decision 4).
 inline constexpr uint64_t kRunnerReserveBytes = uint64_t{1} << 30;
+static_assert(kRunnerReserveBytes == uint64_t{1} << 30, "RunnerDesc::vram_reserve_bytes defaults to it");
 
 // The bytes a runner may hold on the device, in total: its buffers plus its
-// staging buffer. min(4 GiB, budget - usage - kRunnerReserveBytes), from
+// staging buffer. budget - usage - the reserve (kRunnerReserveBytes by default; no 4 GiB ceiling, O193), from
 // VulkanContext::memory_budget() and Core's vram_cap() (B0; plan B, the
 // lead's decision 4; design A1/A2). With the half-heap fallback the usage is
 // what this process's runners hold (runner_memory_stats().live_bytes); with
 // VK_EXT_memory_budget the heap's usage already counts it. Read fresh at each
 // call: the budget moves as other programs allocate.
 [[nodiscard]] uint64_t runner_budget_bytes(compute::VulkanContext& ctx);
+// The same with the run's own reserve (RunnerDesc::vram_reserve_bytes) in place of kRunnerReserveBytes. A reserve compute::check_vram_reserve refuses admits
+// nothing (0 bytes); create() is what refuses it, by name.
+[[nodiscard]] uint64_t runner_budget_bytes(compute::VulkanContext& ctx, int64_t reserve_bytes);
 
 // THE STAGING BUFFER'S MEMORY (Rendering's finding, 2026-10-21: a read from
 // uncached host memory ran at about 230 MB/s, 808 ms for 184 MiB on the 3060

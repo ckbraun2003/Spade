@@ -149,14 +149,28 @@ struct MemoryBudget {
     Source source = Source::half_heap;
 };
 
-// The airflow's own ceiling, the spec's 4 GiB (equal to physics'
-// kGridByteCap, which the CPU checks against; a test pins the two together).
-inline constexpr uint64_t kAirflowVramCap = uint64_t{4} << 30;
-
 // What the engine leaves free for everyone else when it checks its own buffers against the budget (stage 7 Task A3).
 inline constexpr uint64_t kMirrorVramReserve = uint64_t{64} << 20;
 
-// What a caller may allocate: min(kAirflowVramCap, budget - usage - reserve),
+// The least reserve a run may ask to leave free of the device's budget (O193): 0.3 GiB, what the desktop and the compositor need to stay alive.
+inline constexpr uint64_t kMinVramReserve = (uint64_t{3} << 30) / 10;
+
+// The named option `vram_reserve_bytes`: how much of the device's budget a run leaves free. The default is the caller's (the airflow runner's is 1 GiB);
+// a run may LOWER it (the film runs ask 0.3 GiB) and is refused, by the option's name, for a negative value or one under kMinVramReserve. Signed so a
+// negative can be said and refused rather than wrapped.
+[[nodiscard]] inline Result<uint64_t> check_vram_reserve(int64_t asked) {
+    if (asked < 0) {
+        return std::unexpected(Error{Code::invalid_argument, "vram_reserve_bytes " + std::to_string(asked) + " is negative; the reserve is the bytes left free of the device's budget, at least " +
+                                                                 std::to_string(kMinVramReserve) + " (0.3 GiB)"});
+    }
+    if (static_cast<uint64_t>(asked) < kMinVramReserve) {
+        return std::unexpected(Error{Code::invalid_argument, "vram_reserve_bytes " + std::to_string(asked) + " is under the least a run may leave free, " +
+                                                                 std::to_string(kMinVramReserve) + " bytes (0.3 GiB)"});
+    }
+    return static_cast<uint64_t>(asked);
+}
+
+// What a caller may allocate: budget - usage - reserve (O193: no fixed ceiling; a card with more to give gives it),
 // never below 0. With half_heap the usage is `own_allocated`, what the caller
 // says it has allocated itself (it cannot see anyone else's); with ext the
 // heap's usage already counts it.
@@ -168,7 +182,7 @@ inline constexpr uint64_t kMirrorVramReserve = uint64_t{64} << 20;
     uint64_t cap = 0;
     if (budget.budget > used && budget.budget - used > reserve) {
         const uint64_t free = budget.budget - used - reserve;
-        cap = free < kAirflowVramCap ? free : kAirflowVramCap;
+        cap = free;
     }
     return (user_cap != 0 && user_cap < cap) ? user_cap : cap;
 }
@@ -187,8 +201,8 @@ inline constexpr uint64_t kMirrorVramReserve = uint64_t{64} << 20;
         Code::capacity_exceeded,
         std::string(what) + " asks for " + std::to_string(requested) +
             " bytes of VRAM, over what the device can give it: the cap is " + std::to_string(cap) +
-            " bytes = min(" + std::to_string(kAirflowVramCap) + ", budget " + std::to_string(budget.budget) +
-            " - usage " + std::to_string(used) + " - reserve " + std::to_string(reserve) + "), from " +
+            " bytes = budget " + std::to_string(budget.budget) +
+            " - usage " + std::to_string(used) + " - reserve " + std::to_string(reserve) + ", from " +
             (ext ? std::string("VK_EXT_memory_budget")
                  : "half the device-local heap (no VK_EXT_memory_budget; the usage is what the caller allocated " +
                        std::to_string(own_allocated) + " itself)") +

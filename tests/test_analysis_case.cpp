@@ -414,6 +414,30 @@ TEST(AnalysisCaseResolve, AGridPastTheCapIsRefusedBeforeRunning) {
     EXPECT_TRUE(names(refused.error(), "grid.spacing", "GiB")) << listed(refused.error());
 }
 
+// O193: the case validation uses the host's STATED cap (16 GiB), never the machine's free RAM: a case file validates the same on every run. A 427^3 base
+// grid (8 GB) was refused at the old 4 GiB and now passes; a 640^3 one (27 GB) is still refused, and the refusal names the stated number.
+TEST(AnalysisCaseResolve, AGridOverFourGibAndUnderTheHostCapResolves) {
+    const spade::vehicles::ModelType m = quad();
+    an::AnalysisCase c = full_case(m);
+    for (an::RotorSetup& r : c.rotors) r.model = an::RotorModel::disc;
+    c.grid = an::GridSetup{.box = 3.2f, .spacing = 0.0075f, .nests = 0};  // 427 cells across
+    const auto resolved = an::resolve(c, m);
+    ASSERT_TRUE(resolved.has_value()) << (resolved ? "" : listed(resolved.error()));
+    EXPECT_GT(resolved->base_bytes, uint64_t{4} << 30) << "over the old cap";
+    EXPECT_LT(resolved->base_bytes, spade::physics::airflow::kGridByteCap);
+}
+
+TEST(AnalysisCaseResolve, AGridOverTheHostCapIsRefusedNamingTheStatedNumber) {
+    const spade::vehicles::ModelType m = quad();
+    an::AnalysisCase c = full_case(m);
+    for (an::RotorSetup& r : c.rotors) r.model = an::RotorModel::disc;
+    c.grid = an::GridSetup{.box = 3.2f, .spacing = 0.005f, .nests = 0};  // 640 cells across, 27 GB
+    const auto refused = an::resolve(c, m);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_TRUE(names(refused.error(), "grid.spacing", "the solver holds 16 GiB")) << listed(refused.error());
+    EXPECT_TRUE(names(refused.error(), "grid.spacing", "a spacing of at least")) << listed(refused.error());
+}
+
 // ---- vehicles::model_reach (Core's; the editor and the analysis share it) ----
 
 TEST(ModelReach, IsTheFarthestRotorTipOrTheContactRadius) {

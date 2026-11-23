@@ -4,7 +4,7 @@
 // docs/design/interface/records/2026-11-21-fpv-kit-sources.md: +-69.534 mm along and +-89.000 mm across, a 225.9 mm diagonal).
 //
 //   AirflowFpvGrid.TheBoxIsRectangularAtOnePointTwoFiveMillimetresAndWithinTheCaps   252 x 237 x 284 (x along the kit, z across): fewer cells than the
-//                                                X500's 270 x 237 x 270; the engine's grid cap with the case's faces and solids; the device runner's 4 GiB at
+//                                                X500's 270 x 237 x 270; the engine's grid cap with the case's faces and solids; the device runner's budget less its reserve (6.75 GiB on the 3060 Ti) at
 //                                                234.6 B a cell
 //   AirflowFpvGrid.TheHoldLeavesOneAndAHalfRadiiAboveTheHubsInWholeRows   d1_fpv_hold(hub height): 1.5 R of open air above the hubs, the kernel's
 //                                                reach and 4 cells of room, about 0.2 m of wake below, a whole number of rows
@@ -56,12 +56,14 @@ TEST(AirflowFpvGrid, TheBoxIsRectangularAtOnePointTwoFiveMillimetresAndWithinThe
     const uint64_t solids = af::solid_bytes(kD1FpvGrid, bc);
     const double cells = static_cast<double>(kD1FpvGrid.nx) * kD1FpvGrid.ny * kD1FpvGrid.nz;
     std::printf("[ fpv     ] %ux%ux%u at 1.25 mm: %.1f M cells; fluid_bytes %.3f GiB, solid_bytes %.3f GiB, together %.3f GiB against the cap %.3f GiB; "
-                "the device runner's 234.6 B a cell: %.3f GiB of 4\n",
+                "the device runner's 234.6 B a cell: %.3f GiB of 6.75 (the 3060 Ti's budget less the 1 GiB reserve)\n",
                 kD1FpvGrid.nx, kD1FpvGrid.ny, kD1FpvGrid.nz, cells / 1.0e6, static_cast<double>(fluid) / kGiB, static_cast<double>(solids) / kGiB,
                 static_cast<double>(fluid + solids) / kGiB, static_cast<double>(af::kGridByteCap) / kGiB, cells * 234.6 / kGiB);
     const auto ok = af::check_grid(kD1FpvGrid, bc, true);
     EXPECT_TRUE(ok.has_value()) << (ok ? "" : ok.error().context);
-    EXPECT_LE(cells * 234.6, 4.0 * kGiB) << "the device runner's own 4 GiB (compute::vram_cap), measured at 234.6 B a cell";
+    // O193: the device runner's cap is the card's budget less its reserve (compute::vram_cap), no fixed 4 GiB: on the 3060 Ti (8 GiB, a quarter held back,
+    // the 1 GiB runner reserve) 6.75 GiB, measured at 234.6 B a cell.
+    EXPECT_LE(cells * 234.6, (8.0 - 0.25 - 1.0) * kGiB) << "the 3060 Ti's budget less the reserve, at 234.6 B a cell";
 }
 
 // The hub height is the kit's, above the drone's design origin (the held point): the hold is a function of it.

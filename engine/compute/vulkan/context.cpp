@@ -814,7 +814,7 @@ MemoryBudget VulkanContext::memory_budget() const {
         out.usage = ext_budget.heapUsage[out.heap];
     } else {
         // Half the heap: on an integrated GPU the device-local heap is system
-        // memory, and half of it is still capped at kAirflowVramCap by vram_cap().
+        // memory, and half of it is the budget vram_cap() works from.
         out.source = MemoryBudget::Source::half_heap;
         out.budget = memory.memoryHeaps[out.heap].size / 2;
     }

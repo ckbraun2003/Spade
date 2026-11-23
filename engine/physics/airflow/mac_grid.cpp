@@ -52,10 +52,11 @@ Result<MacGrid> make_grid(const GridShape& shape, const DomainBc& bc) {
     if (Result<void> ok = check_shape(shape, bc); !ok) return std::unexpected(ok.error());
     MacGrid g;
     g.shape = shape;
-    g.u.assign(std::size_t{shape.nx + 1u} * shape.ny * shape.nz, 0.0f);
-    g.v.assign(std::size_t{shape.nx} * (shape.ny + 1u) * shape.nz, 0.0f);
-    g.w.assign(std::size_t{shape.nx} * shape.ny * (shape.nz + 1u), 0.0f);
-    g.p.assign(std::size_t{shape.nx} * shape.ny * shape.nz, 0.0f);
+    const std::string where = "airflow grid " + std::to_string(shape.nx) + " x " + std::to_string(shape.ny) + " x " + std::to_string(shape.nz);
+    if (Result<void> r = assign_zeroed(g.u, std::size_t{shape.nx + 1u} * shape.ny * shape.nz, where + ", array 'u'"); !r) return std::unexpected(r.error());
+    if (Result<void> r = assign_zeroed(g.v, std::size_t{shape.nx} * (shape.ny + 1u) * shape.nz, where + ", array 'v'"); !r) return std::unexpected(r.error());
+    if (Result<void> r = assign_zeroed(g.w, std::size_t{shape.nx} * shape.ny * (shape.nz + 1u), where + ", array 'w'"); !r) return std::unexpected(r.error());
+    if (Result<void> r = assign_zeroed(g.p, std::size_t{shape.nx} * shape.ny * shape.nz, where + ", array 'p'"); !r) return std::unexpected(r.error());
     return g;
 }
 

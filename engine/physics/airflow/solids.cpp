@@ -597,7 +597,12 @@ uint64_t solid_field_bytes(const GridShape& s) noexcept {
     return faces * (3u * sizeof(float) + sizeof(uint32_t) + sizeof(uint8_t));
 }
 
+static Result<SolidField> make_solid_field_body(const GridShape& s);
 Result<SolidField> make_solid_field(const GridShape& s) {
+    return allocating<SolidField>("airflow solid field (" + detail::shape_text(s) + ")", solid_field_bytes(s), [&] { return make_solid_field_body(s); });
+}
+
+static Result<SolidField> make_solid_field_body(const GridShape& s) {
     if (s.nx == 0 || s.ny == 0 || s.nz == 0 || !(s.dx > 0.0f) || !std::isfinite(s.dx)) {
         return std::unexpected(Error{Code::invalid_argument, "airflow solids: a grid shape make_grid() refuses"});
     }
@@ -619,8 +624,16 @@ Result<SolidField> make_solid_field(const GridShape& s) {
     return f;
 }
 
+static Result<void> build_solids_body(SolidField& f, const GridShape& s, std::array<bool, 3> periodic, std::span<const SolidPart> parts,
+                                      const SolidSampler& sample);
 Result<void> build_solids(SolidField& f, const GridShape& s, std::array<bool, 3> periodic,
                           std::span<const SolidPart> parts, const SolidSampler& sample) {
+    return allocating<void>("airflow solids (" + detail::shape_text(s) + ")", solid_field_bytes(s),
+                            [&] { return build_solids_body(f, s, periodic, parts, sample); });
+}
+
+static Result<void> build_solids_body(SolidField& f, const GridShape& s, std::array<bool, 3> periodic,
+                                      std::span<const SolidPart> parts, const SolidSampler& sample) {
     open_everything(f);
     f.run_line = "solids: none";
     if (parts.empty()) return {};

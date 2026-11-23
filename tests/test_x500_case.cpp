@@ -22,7 +22,7 @@
 //   X500Balance.TheBalanceSpeedHoldsAQuarterOfTheWeight   the grid-free BEMT (tests/bemt_reference.hpp) bisected for W/4 = 4.0027 N:
 //                                                thrust within 0.1% of the target; the speed against the chain's own static-thrust speed
 //   AirflowX500.TheTwoAndAHalfMillimetreGridIsWithinTheCapWithItsSolids   270 x 237 x 270 at 2.5 mm; check_grid(kD1X500Grid, the case's
-//                                                faces, with solids); the device runner's 4 GiB at 234.6 B a cell
+//                                                faces, with solids); the device runner's budget less its reserve (6.75 GiB on the 3060 Ti) at 234.6 B a cell
 //   AirflowX500.TheRotorsReachStaysInsideTheBoxWithRoomAbove   the discs' reach and the open air above and below and at the sides
 //   AirflowX500.TheLinesThrustAgainstTheStepInOneRotorOnTheCpu   L105, opt-in (SPADE_L105=1): the lines' thrust against h, one rotor on the CPU
 // ---------------------------------------------------------------------------
@@ -320,14 +320,15 @@ TEST(AirflowX500, TheTwoAndAHalfMillimetreGridIsWithinTheCapWithItsSolids) {
     const uint64_t fluid = spade::physics::airflow::fluid_bytes(grid, bc);
     const uint64_t solids = spade::physics::airflow::solid_bytes(grid, bc);
     const double cells = static_cast<double>(grid.nx) * grid.ny * grid.nz;
-    std::printf("[ x500    ] %ux%ux%u at 2.5 mm: %.1f M cells; fluid_bytes %.3f GiB, solid_bytes %.3f GiB, together %.3f GiB against the cap "
-                "%.3f GiB; the device runner's 234.6 B a cell: %.3f GiB of 4\n",
+    std::printf("[ x500    ] %ux%ux%u at 2.5 mm: %.1f M cells; fluid_bytes %.3f GiB, solid_bytes %.3f GiB, together %.3f GiB against the host policy cap "
+                "%.3f GiB; the device runner's 234.6 B a cell: %.3f GiB of 6.75 (the 3060 Ti's budget less the 1 GiB reserve)\n",
                 grid.nx, grid.ny, grid.nz, cells / 1.0e6, static_cast<double>(fluid) / 1073741824.0,
                 static_cast<double>(solids) / 1073741824.0, static_cast<double>(fluid + solids) / 1073741824.0,
                 static_cast<double>(spade::physics::airflow::kGridByteCap) / 1073741824.0, cells * 234.6 / 1073741824.0);
     const auto ok = spade::physics::airflow::check_grid(grid, bc, true);
     EXPECT_TRUE(ok.has_value()) << (ok ? "" : ok.error().context);
-    EXPECT_LE(cells * 234.6, 4.0 * 1073741824.0) << "the device runner's own 4 GiB (compute::vram_cap), measured at 234.6 B a cell";
+    // O193: no fixed 4 GiB; the device runner's cap is the card's budget less the reserve (compute::vram_cap): 6.75 GiB on the 3060 Ti.
+    EXPECT_LE(cells * 234.6, (8.0 - 0.25 - 1.0) * 1073741824.0) << "the 3060 Ti's budget less the reserve, at 234.6 B a cell";
 }
 
 // The line's kernel reaches R + 6 dx from a rotor's centre (the live run refuses a rotor whose reach leaves the grid, up or sideways):

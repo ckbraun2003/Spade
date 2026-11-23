@@ -166,7 +166,7 @@ inline void spread_actuators(std::span<const ActuatorDisc> discs, const GridShap
 // refused capacity_exceeded naming the bytes and the cap. One rule for
 // make_grid(), make_fluid_scratch(), set_solids() and a scene's validator
 // (TD-9; the N5b agreement with Core); no allocation but a refusal's message.
-[[nodiscard]] Result<void> check_grid(const GridShape& shape, const DomainBc& bc, bool with_solids);
+[[nodiscard]] Result<void> check_grid(const GridShape& shape, const DomainBc& bc, bool with_solids, uint64_t user_cap = 0);  // user_cap: a run may LOWER the host cap (host_grid_cap), never raise it
 
 // Refused, before anything is allocated:
 //   invalid_argument, naming the field: rho or h not positive and finite; nu
@@ -188,6 +188,8 @@ FluidHealth fluid_step(MacGrid& g, const DomainBc& bc, const FluidConfig& cfg, F
 // allocates the solid field, and every call relabels the regions and resets
 // the multigrid's weights and CG's vectors to their sizes). No parts: plan A's
 // paths, bit for bit. Refused as build_solids() refuses, leaving no solid.
+// A capacity_exceeded return from an allocation that failed part-way (the guard names the stage and the bytes) can leave the scratch's solids
+// half-built: the caller drops that scratch for solids (builds a new FluidScratch), as it had to when the exception unwound.
 [[nodiscard]] Result<void> set_solids(FluidScratch& s, const MacGrid& g, const DomainBc& bc,
                                       std::span<const SolidPart> parts, const SolidSampler& sample);
 
@@ -200,7 +202,8 @@ FluidHealth fluid_step(MacGrid& g, const DomainBc& bc, const FluidConfig& cfg, F
 // (B7's harness, the GPU step's host side) so reaches set_solids()' state,
 // bit for bit. A host call: it allocates. Refused before the scratch
 // changes: as check_grid() refuses, and invalid_argument for a field not
-// made for g's shape.
+// made for g's shape. Those refusals leave the scratch as it was; a capacity_exceeded from an allocation that failed part-way
+// does not (the field is attached and the regions and weights are half-built), so the caller drops that scratch for solids, as before.
 [[nodiscard]] Result<void> attach_solid_field(FluidScratch& s, const MacGrid& g, const DomainBc& bc, SolidField field);
 
 }  // namespace spade::physics::airflow

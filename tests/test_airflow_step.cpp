@@ -1,5 +1,7 @@
 // The airflow solver core's fluid step and its golden (airflow core plan,
 // Task 8).
+#include <new>
+#include <stdexcept>
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -130,7 +132,7 @@ TEST(AirflowStep, TheSolverCoresDigestIsPinned) {
 // before anything is allocated: the grid here is a shape with no storage.
 TEST(AirflowStep, AFluidScratchPastTheByteCapIsRefusedBeforeAllocating) {
     MacGrid g;
-    g.shape = {512, 512, 256, 0.01f};  // no storage: make_fluid_scratch must refuse from the shape alone
+    g.shape = {640, 640, 512, 0.01f};  // no storage: make_fluid_scratch must refuse from the shape alone (O193: 512 x 512 x 256 is now under the 16 GiB cap)
     ASSERT_LE(grid_bytes(g.shape), kGridByteCap) << "the grid alone fits";
     ASSERT_GT(fluid_bytes(g.shape, DomainBc{}), kGridByteCap) << "the grid and its scratch do not";
     const auto s = make_fluid_scratch(g, DomainBc{}, {.h = 0.001f});
@@ -329,3 +331,92 @@ TEST(AirflowActuator, ASwirlingDiscAddsItsTorqueAboutItsAxisAndNoSideForce) {
 }
 
 }  // namespace
+
+// O193 (the lead's ruling: no path may crash). Oversight's condition on the 16 GiB policy number is that a CPU run that passes validation but cannot get its
+// memory fails BY NAME, never a crash. Every Result-returning CPU function that allocates runs its body in allocating(), which turns std::bad_alloc and
+// std::length_error into a refusal naming the stage (the grid's shape) and the bytes it was building. ScopedAllocationLimit FORCES the failure (the guard acts
+// as the machine refusing any allocation over the limit), so no test relies on the machine running out of memory.
+TEST(AirflowAllocation, TheGuardTurnsAThrownAllocationFailureIntoANamedRefusalAndLetsOtherExceptionsThrough) {
+    namespace af = spade::physics::airflow;
+    const auto bad = af::allocating<int>("airflow thing (3 x 3 x 3)", 7777, []() -> spade::Result<int> { throw std::bad_alloc(); });
+    ASSERT_FALSE(bad.has_value());
+    EXPECT_EQ(bad.error().code, spade::Code::capacity_exceeded);
+    EXPECT_NE(bad.error().context.find("airflow thing (3 x 3 x 3)"), std::string::npos) << bad.error().context;
+    EXPECT_NE(bad.error().context.find("7777"), std::string::npos) << bad.error().context;
+    EXPECT_NE(bad.error().context.find("out of memory"), std::string::npos) << bad.error().context;
+    const auto too_long = af::allocating<int>("airflow thing", 8, []() -> spade::Result<int> { throw std::length_error("vector"); });
+    ASSERT_FALSE(too_long.has_value());
+    EXPECT_EQ(too_long.error().code, spade::Code::capacity_exceeded);
+    const auto fine = af::allocating<int>("airflow thing", 8, []() -> spade::Result<int> { return 5; });
+    ASSERT_TRUE(fine.has_value());
+    EXPECT_EQ(*fine, 5);
+    EXPECT_THROW((void)af::allocating<int>("airflow thing", 8, []() -> spade::Result<int> { throw std::logic_error("a bug, not memory"); }), std::logic_error)
+        << "only an allocation failure is turned into a refusal";
+}
+
+TEST(AirflowAllocation, EveryCpuEntryThatAllocatesRefusesAFailedAllocationByNameAndNeverThrows) {
+    namespace af = spade::physics::airflow;
+    const af::DomainBc bc{};
+    const af::GridShape shape{8, 8, 8, 0.01f};
+    auto grid = af::make_grid(shape, bc);
+    ASSERT_TRUE(grid.has_value());
+    auto scratch = af::make_fluid_scratch(*grid, bc, {.h = 0.001f});
+    ASSERT_TRUE(scratch.has_value()) << scratch.error().context;
+    auto field = af::make_solid_field(shape);
+    ASSERT_TRUE(field.has_value());
+
+    const auto expect_named = [&](const spade::Error& e, const std::string& entry, const char* stage, uint64_t bytes) {
+        EXPECT_EQ(e.code, spade::Code::capacity_exceeded) << entry << ": " << e.context;
+        EXPECT_NE(e.context.find("out of memory"), std::string::npos) << entry << ": " << e.context;
+        EXPECT_NE(e.context.find(stage), std::string::npos) << entry << ": the stage is named: " << e.context;
+        EXPECT_NE(e.context.find("8 x 8 x 8"), std::string::npos) << entry << ": the grid is named: " << e.context;
+        if (bytes != 0) {
+            EXPECT_NE(e.context.find(std::to_string(bytes)), std::string::npos) << entry << ": the bytes are named: " << e.context;
+        }
+    };
+
+    const af::ScopedAllocationLimit limit(1);  // every allocation over one byte is refused, as an exhausted machine would
+    {
+        spade::Result<af::MacGrid> r = std::unexpected(spade::Error{spade::Code::internal, "unset"});
+        EXPECT_NO_THROW(r = af::make_grid(shape, bc));
+        ASSERT_FALSE(r.has_value()) << "make_grid";
+        expect_named(r.error(), "make_grid", "airflow grid", 0);
+    }
+    {
+        spade::Result<af::FluidScratch> r = std::unexpected(spade::Error{spade::Code::internal, "unset"});
+        EXPECT_NO_THROW(r = af::make_fluid_scratch(*grid, bc, {.h = 0.001f}));
+        ASSERT_FALSE(r.has_value()) << "make_fluid_scratch";
+        expect_named(r.error(), "make_fluid_scratch", "fluid scratch", af::fluid_bytes(shape, bc));
+    }
+    {
+        spade::Result<af::SolidField> r = std::unexpected(spade::Error{spade::Code::internal, "unset"});
+        EXPECT_NO_THROW(r = af::make_solid_field(shape));
+        ASSERT_FALSE(r.has_value()) << "make_solid_field";
+        expect_named(r.error(), "make_solid_field", "solid field", af::solid_field_bytes(shape));
+    }
+    {
+        spade::Result<void> r = std::unexpected(spade::Error{spade::Code::internal, "unset"});
+        EXPECT_NO_THROW(r = af::enable_dye(*scratch, *grid));
+        ASSERT_FALSE(r.has_value()) << "enable_dye";
+        expect_named(r.error(), "enable_dye", "dye", 0);
+    }
+    {
+        spade::Result<void> r = std::unexpected(spade::Error{spade::Code::internal, "unset"});
+        EXPECT_NO_THROW(r = af::set_solids(*scratch, *grid, bc, {}, af::SolidSampler{}));
+        ASSERT_FALSE(r.has_value()) << "set_solids";
+        expect_named(r.error(), "set_solids", "solids", af::solid_bytes(shape, bc));
+    }
+    {
+        spade::Result<void> r = std::unexpected(spade::Error{spade::Code::internal, "unset"});
+        EXPECT_NO_THROW(r = af::attach_solid_field(*scratch, *grid, bc, std::move(*field)));
+        ASSERT_FALSE(r.has_value()) << "attach_solid_field";
+        expect_named(r.error(), "attach_solid_field", "solids", af::solid_bytes(shape, bc));
+    }
+    {
+        af::SolidField other;
+        spade::Result<void> r = std::unexpected(spade::Error{spade::Code::internal, "unset"});
+        EXPECT_NO_THROW(r = af::build_solids(other, shape, {false, false, false}, {}, af::SolidSampler{}));
+        ASSERT_FALSE(r.has_value()) << "build_solids";
+        expect_named(r.error(), "build_solids", "solids", af::solid_field_bytes(shape));
+    }
+}
