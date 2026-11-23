@@ -5,10 +5,14 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "fc_flight_world.hpp"
+#include "fc_host/lockstep.hpp"
 #include "fc_link/ardupilot_json.hpp"
+#include "fc_link/ardupilot_link.hpp"
 
 namespace {
 
@@ -159,6 +163,151 @@ TEST(FcLinkArdupilotJson, AfterAResetTheNextReplyHasNoPrevious) {
     c.reset();
     EXPECT_TRUE(c.accept(0.0).has_value()) << "ArduPilot restarted: time starts over";
     EXPECT_TRUE(c.accept(0.0025).has_value());
+}
+
+// ---------------------------------------------------------------------------
+// The seam: a real LockstepHost on the flight world (the X500, the IMU every 8 ticks of 500 us = 4 ms = 250 Hz), no socket and no ArduPilot.
+// ---------------------------------------------------------------------------
+using spade::fc_link::ArduPilotConfig;
+using spade::fc_link::ArduPilotLink;
+
+ServoPacket servo_packet(uint32_t count, uint16_t rate, uint16_t pwm) {
+    ServoPacket p;
+    p.frame_rate = rate;
+    p.frame_count = count;
+    p.pwm.assign(16, pwm);
+    return p;
+}
+
+struct SeamRig {
+    std::optional<fc_flight_test::FlightWorld> world;
+    std::optional<spade::fc_host::LockstepHost> host;
+    std::optional<ArduPilotLink> link;
+};
+
+void open_rig(SeamRig& r) {
+    r.world = fc_flight_test::make_flight_world();
+    ASSERT_TRUE(r.world.has_value());
+    auto host = spade::fc_host::LockstepHost::open(r.world->sim, r.world->vehicle, r.world->bindings);
+    ASSERT_TRUE(host.has_value()) << host.error().context;
+    r.host.emplace(std::move(*host));
+    ASSERT_TRUE(r.world->model.model.propulsion.has_value());
+    ArduPilotConfig cfg;
+    cfg.chain = &*r.world->model.model.propulsion;
+    auto link = ArduPilotLink::create(cfg);
+    ASSERT_TRUE(link.has_value()) << link.error().context;
+    r.link.emplace(std::move(*link));
+}
+
+TEST(FcLinkArdupilotLink, ALinkWithoutAPropulsionChainIsRefusedNamingIt) {
+    const auto link = ArduPilotLink::create(ArduPilotConfig{});
+    ASSERT_FALSE(link.has_value());
+    EXPECT_NE(link.error().context.find("chain"), std::string::npos) << link.error().context;
+}
+
+TEST(FcLinkArdupilotLink, OnePacketAdvancesTheHostOneImuPeriodAndTheReplyIsTheStateAtItsEnd) {
+    SeamRig r;
+    ASSERT_NO_FATAL_FAILURE(open_rig(r));
+    const auto step = r.link->respond(*r.host, servo_packet(1, 250, 1000));
+    ASSERT_TRUE(step.has_value()) << step.error().context;
+    EXPECT_EQ(step->kind, FrameKind::fresh);
+    EXPECT_EQ(step->tick, 8u) << "250 Hz is 4 ms is 8 ticks of 500 us";
+    EXPECT_EQ(r.host->tick(), 8u);
+    EXPECT_NEAR(step->state.timestamp_s, 0.004, 1e-12) << "absolute seconds: the host's time at the end of the period";
+    EXPECT_NEAR(step->state.accel_frd[2], -9.80665, 1.0) << "at rest the accelerometer reads the support force: 1 g UP, which is -Z in FRD";
+    EXPECT_NEAR(step->state.position_ned[2], -r.world->rest_com_y, 0.05) << "down is negative above the origin: the centre of mass sits rest_com_y over the ground";
+    EXPECT_GT(step->state.quaternion_wxyz[0], 0.99) << "level, nose north: the attitude is (nearly) the identity";
+}
+
+TEST(FcLinkArdupilotLink, FullPulsesOnTheFourMotorsMakeTheVehicleClimb) {
+    SeamRig r;
+    ASSERT_NO_FATAL_FAILURE(open_rig(r));
+    std::optional<spade::fc_link::ArduPilotStep> last;
+    for (uint32_t i = 1; i <= 100; ++i) {
+        const auto step = r.link->respond(*r.host, servo_packet(i, 250, 2000));
+        ASSERT_TRUE(step.has_value()) << step.error().context;
+        last = *step;
+    }
+    ASSERT_TRUE(last.has_value());
+    EXPECT_LT(last->state.velocity_ned[2], -0.5) << "climbing is negative Down velocity (0.4 s of full duty)";
+    EXPECT_LT(last->state.position_ned[2], -r.world->rest_com_y - 0.02);
+}
+
+TEST(FcLinkArdupilotLink, OnlyTheFirstFourChannelsDriveTheRotors) {
+    SeamRig a, b;
+    ASSERT_NO_FATAL_FAILURE(open_rig(a));
+    ASSERT_NO_FATAL_FAILURE(open_rig(b));
+    std::string text_a, text_b;
+    for (uint32_t i = 1; i <= 20; ++i) {
+        ServoPacket pa = servo_packet(i, 250, 1700);
+        ServoPacket pb = servo_packet(i, 250, 1700);
+        for (std::size_t c = 4; c < 16; ++c) pb.pwm[c] = 2000;  // channels 5 to 16 are not motors
+        const auto sa = a.link->respond(*a.host, pa);
+        const auto sb = b.link->respond(*b.host, pb);
+        ASSERT_TRUE(sa.has_value() && sb.has_value());
+        text_a = *encode_state_reply(sa->state);
+        text_b = *encode_state_reply(sb->state);
+    }
+    EXPECT_EQ(text_a, text_b);
+}
+
+TEST(FcLinkArdupilotLink, ARepeatedFrameCountIsAnsweredAgainWithTheSameStateAndTheHostDoesNotMove) {
+    SeamRig r;
+    ASSERT_NO_FATAL_FAILURE(open_rig(r));
+    const auto first = r.link->respond(*r.host, servo_packet(7, 250, 1500));
+    ASSERT_TRUE(first.has_value()) << first.error().context;
+    const uint64_t tick = r.host->tick();
+    const auto again = r.link->respond(*r.host, servo_packet(7, 250, 1500));
+    ASSERT_TRUE(again.has_value()) << again.error().context;
+    EXPECT_EQ(again->kind, FrameKind::resend);
+    EXPECT_EQ(r.host->tick(), tick) << "a resend does not step the world";
+    EXPECT_EQ(*encode_state_reply(again->state), *encode_state_reply(first->state));
+}
+
+TEST(FcLinkArdupilotLink, AFrameCountThatFallsIsARestartTheRunCannotFollow) {
+    SeamRig r;
+    ASSERT_NO_FATAL_FAILURE(open_rig(r));
+    ASSERT_TRUE(r.link->respond(*r.host, servo_packet(5, 250, 1000)).has_value());
+    const uint64_t tick = r.host->tick();
+    const auto restarted = r.link->respond(*r.host, servo_packet(2, 250, 1000));
+    ASSERT_FALSE(restarted.has_value());
+    EXPECT_NE(restarted.error().context.find("restart"), std::string::npos) << restarted.error().context;
+    EXPECT_EQ(r.host->tick(), tick);
+}
+
+TEST(FcLinkArdupilotLink, AFramePeriodThatIsNotTheImusIsRefusedNamingBothAndNothingAdvances) {
+    SeamRig r;
+    ASSERT_NO_FATAL_FAILURE(open_rig(r));
+    const auto step = r.link->respond(*r.host, servo_packet(1, 400, 1000));  // 2.5 ms is 5 ticks; the IMU is every 8
+    ASSERT_FALSE(step.has_value());
+    EXPECT_NE(step.error().context.find("IMU period"), std::string::npos) << step.error().context;
+    EXPECT_NE(step.error().context.find("400"), std::string::npos) << step.error().context;
+    EXPECT_EQ(r.host->tick(), 0u);
+}
+
+TEST(FcLinkArdupilotLink, TheSamePacketsGiveTheSameBytesTwice) {
+    SeamRig a, b;
+    ASSERT_NO_FATAL_FAILURE(open_rig(a));
+    ASSERT_NO_FATAL_FAILURE(open_rig(b));
+    for (uint32_t i = 1; i <= 60; ++i) {
+        const uint16_t pwm = static_cast<uint16_t>(1200 + (i * 13) % 700);
+        const auto sa = a.link->respond(*a.host, servo_packet(i, 250, pwm));
+        const auto sb = b.link->respond(*b.host, servo_packet(i, 250, pwm));
+        ASSERT_TRUE(sa.has_value() && sb.has_value());
+        ASSERT_EQ(*encode_state_reply(sa->state), *encode_state_reply(sb->state)) << "frame " << i;
+    }
+}
+
+TEST(FcLinkArdupilotLink, EveryReplyPassesTheTimestampRuleArduPilotApplies) {
+    SeamRig r;
+    ASSERT_NO_FATAL_FAILURE(open_rig(r));
+    ReplyClock clock;
+    for (uint32_t i = 1; i <= 30; ++i) {
+        const auto step = r.link->respond(*r.host, servo_packet(i, 250, 1100));
+        ASSERT_TRUE(step.has_value()) << step.error().context;
+        const auto ok = clock.accept(step->state.timestamp_s);
+        ASSERT_TRUE(ok.has_value()) << "frame " << i << ": " << ok.error().context;
+    }
 }
 
 }  // namespace
