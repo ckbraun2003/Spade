@@ -49,7 +49,7 @@ TEST(FcFlightWorld, ACommonDutyControllerTakesTheX500ToTwoMetersAndHoldsItAtASan
         last_alt = alt;
         const double err = target - alt;
         integral = std::clamp(integral + err * dt, -2.0, 2.0);
-        const double throttle = std::clamp(0.5 + 0.15 * err - 0.25 * vel + 0.05 * integral, 0.0, 1.0);
+        const double throttle = std::clamp(0.36 + 0.15 * err - 0.25 * vel + 0.10 * integral, 0.0, 1.0);  // 0.36: about the hover throttle the first run's trace showed
         duty = spade::analysis::kDefaultIdleDuty + (1.0 - spade::analysis::kDefaultIdleDuty) * throttle;  // the arm rule's duty for the throttle
         spade::analysis::Controls controls;
         controls.armed = true;
