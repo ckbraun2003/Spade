@@ -13,7 +13,14 @@ if(NOT BUILD_DIR OR NOT EXISTS "${BUILD_DIR}/CMakeCache.txt")
     message(FATAL_ERROR "sdk_install_geo_fetch: BUILD_DIR '${BUILD_DIR}' is not a CMake build tree (no CMakeCache.txt)")
 endif()
 set(prefix "${BUILD_DIR}/sdk_install_test")
-file(REMOVE_RECURSE "${prefix}")
+# Nothing is removed unless the prefix is, by its normalised absolute path, inside the build directory.
+cmake_path(ABSOLUTE_PATH BUILD_DIR NORMALIZE OUTPUT_VARIABLE build_abs)
+cmake_path(ABSOLUTE_PATH prefix NORMALIZE OUTPUT_VARIABLE prefix_abs)
+cmake_path(IS_PREFIX build_abs "${prefix_abs}" NORMALIZE prefix_is_inside)
+if(NOT prefix_is_inside OR prefix_abs STREQUAL build_abs)
+    message(FATAL_ERROR "sdk_install_geo_fetch: the scratch prefix '${prefix_abs}' is not inside the build tree '${build_abs}'; nothing was removed")
+endif()
+file(REMOVE_RECURSE "${prefix_abs}")
 
 execute_process(COMMAND "${CMAKE_COMMAND}" --install "${BUILD_DIR}" --prefix "${prefix}" --config "${CONFIG}"
     RESULT_VARIABLE install_rc OUTPUT_QUIET ERROR_VARIABLE install_err)

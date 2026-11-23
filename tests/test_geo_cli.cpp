@@ -252,6 +252,16 @@ TEST(GeoCli, UsageProblemsAreExitTwoOnTheErrorStreamWithNothingOnOut) {
     EXPECT_TRUE(rig.http.urls.empty());
 }
 
+// --help is usage text and nothing else: the program never reaches the HTTP layer for it (the installed tool's smoke runs it with no network).
+TEST(GeoCli, HelpMakesNoRequest) {
+    CliRig rig;
+    EXPECT_EQ(rig.run({"--help"}), 0);
+    EXPECT_TRUE(rig.http.urls.empty());
+    CliRig second;
+    EXPECT_EQ(second.run({"--lat", "40.76", "--lon", "-113.90", "--check"}), 3) << "--check on an empty cache is a miss, and also asks no one";
+    EXPECT_TRUE(second.http.urls.empty());
+}
+
 TEST(GeoCli, HelpSaysWhereTheHeightModelHolds) {
     CliRig rig;
     EXPECT_EQ(rig.run({"--help"}), 0);

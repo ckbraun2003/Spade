@@ -983,6 +983,19 @@ if(WIN32)
         TIMEOUT 120)
 endif()
 
+# The script refuses a directory that is not a CMake build tree, by name and before it removes anything (SdkInstall's scratch prefix is derived
+# from the build directory alone). Run on the source tree's tests/ directory, which has no CMakeCache.txt.
+if(WIN32)
+    add_test(NAME SdkInstall.RefusesADirectoryThatIsNotABuildTreeBeforeRemovingAnything
+        COMMAND "${CMAKE_COMMAND}" -DBUILD_DIR=${CMAKE_CURRENT_SOURCE_DIR} -DCONFIG=$<CONFIG>
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/sdk_install_geo_fetch.cmake")
+    set_tests_properties(SdkInstall.RefusesADirectoryThatIsNotABuildTreeBeforeRemovingAnything PROPERTIES
+        LABELS spade
+        TIMEOUT 60
+        WILL_FAIL TRUE
+        PASS_REGULAR_EXPRESSION "is not a CMake build tree")
+endif()
+
 # The part import tool's executable, as built (L88): it starts, prints its usage, and refuses a store inside a git work tree, all without
 # Python. The library's behaviour is tested in-process (test_part_import_run.cpp); this is only that the program is linked and runs.
 # LABELS spade, as above.
