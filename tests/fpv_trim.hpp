@@ -44,13 +44,49 @@ struct Result {
 
 // A Newton step in omega with gain k, for a thrust that varies as omega squared: omega * (1 + k (1 - share) / (2 share)). NaN for a non-finite or
 // non-positive omega or share, or a gain outside (0, 1].
-[[nodiscard]] inline double next_omega(double, double, double) noexcept { return std::numeric_limits<double>::quiet_NaN(); }
+[[nodiscard]] inline double next_omega(double omega, double share, double gain) noexcept {
+    if (!(omega > 0.0) || !std::isfinite(omega) || !(share > 0.0) || !std::isfinite(share) || !(gain > 0.0 && gain <= 1.0)) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    return omega * (1.0 + gain * 0.5 * (1.0 - share) / share);
+}
 
-[[nodiscard]] inline bool settled(std::span<const Window>, const Rule& = {}) noexcept { return false; }
+[[nodiscard]] inline bool settled(std::span<const Window> w, const Rule& rule = {}) noexcept {
+    const std::size_t n = w.size();
+    if (n < rule.min_windows || n < 2) return false;
+    const Window& a = w[n - 2];
+    const Window& b = w[n - 1];
+    for (const double v : {a.omega, a.share, b.omega, b.share}) {
+        if (!std::isfinite(v)) return false;
+    }
+    return std::fabs(b.omega - a.omega) <= rule.omega_tol * b.omega && std::fabs(b.share - a.share) <= rule.share_tol &&
+           std::fabs(b.share - 1.0) <= rule.near_one;
+}
 
+// Runs the controller against a plant: plant(omega, steps) advances the plant `steps` steps with the rotor at omega and returns the window's share.
+// Stops at the rule, at the cap (whole windows only), or refused on a bad configuration or a non-finite or non-positive share.
 template <class Plant>
-[[nodiscard]] Result run(Plant&&, double, const Config& = {}) {
-    return {};
+[[nodiscard]] Result run(Plant&& plant, double omega0, const Config& cfg = {}) {
+    Result r;
+    if (!(omega0 > 0.0) || !std::isfinite(omega0) || !(cfg.gain > 0.0 && cfg.gain <= 1.0) || cfg.window_steps == 0 ||
+        cfg.cap_steps < cfg.window_steps) {
+        return r;
+    }
+    double omega = omega0;
+    for (std::size_t steps = 0; steps + cfg.window_steps <= cfg.cap_steps; steps += cfg.window_steps) {
+        const double share = plant(omega, cfg.window_steps);
+        r.steps = steps + cfg.window_steps;
+        r.windows.push_back({omega, share});
+        if (!(share > 0.0) || !std::isfinite(share)) return r;  // refused
+        if (settled(r.windows, cfg.rule)) {
+            r.outcome = Outcome::settled;
+            r.omega = omega;
+            return r;
+        }
+        omega = next_omega(omega, share, cfg.gain);
+    }
+    r.outcome = Outcome::unsettled;
+    return r;
 }
 
 }  // namespace spade::test::fpv_trim
