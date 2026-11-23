@@ -6,8 +6,8 @@
 //   FcLinkRun.ARunDrivenThroughTheExchangeLeavesARecordTheCheckerPasses          written to a folder, read back, checked: K1-K3, K5-K7, K9, K10 pass
 //   FcLinkRun.TheRecordSaysTheBootAndTheTicksTheExchangeSawAndTheClockAddsUp     boot_steps, boot_end_time_usec and trace_ticks are the loop's own counts;
 //                                                                                the last HIL_SENSOR time is the boot end plus the ticks run
-//   FcLinkRun.TwoRunsOfTheSameScriptLeaveTheSameBytesAndTheBootLeavesNoMarkOnTheTrace
-//   FcLinkRun.ARecordOfAnExchangeRunFailsTheCheckerWhenAFileIsChanged            one flipped bit in trace.bin or commands.bin: K5 FAIL
+//   FcLinkRun.TwoRunsOfTheSameScriptLeaveTheSameBytesAndOnlyTheBootNoteInTheTraceHeaderTellsTheBootLength
+//   FcLinkRun.ARecordOfAnExchangeRunFailsTheCheckerWhenAFileIsChanged            one flipped bit in trace.bin or commands.bin: K2 FAIL
 // ---------------------------------------------------------------------------
 
 #include <gtest/gtest.h>
@@ -64,6 +64,13 @@ constexpr uint64_t kLinkStepUs = 4000;
 [[nodiscard]] RunMeters meters() {
     RunMeters m;
     m.memory_peak_bytes = 123456;
+    spade::fc_host::StageLatency chain;  // a record needs at least one stage; literal numbers, the runner's measurement is not under test here
+    chain.name = "chain";
+    chain.min_ns = 1000.0;
+    chain.mean_ns = 1500.5;
+    chain.p99_ns = 2000.0;
+    chain.max_ns = 2100.0;
+    m.stages.push_back(chain);
     return m;
 }
 
@@ -112,7 +119,8 @@ struct Driven {
             *last = s.time_usec;
             fcl::ActuatorReply r;
             const bool booting = *calls <= boot_replies;
-            const float base = 0.5f + 0.02f * static_cast<float>(*calls % 5);
+            const uint64_t after_boot = booting ? 0u : *calls - boot_replies;  // counts from the end of the boot: a longer boot changes nothing after it
+            const float base = 0.5f + 0.02f * static_cast<float>(after_boot % 5u);
             for (std::size_t i = 0; i < 4; ++i) r.controls[i] = booting ? 0.0f : base + 0.01f * static_cast<float>(i);
             r.armed = !booting;
             r.lockstep = true;
@@ -172,15 +180,33 @@ TEST(FcLinkRun, TheRecordSaysTheBootAndTheTicksTheExchangeSawAndTheClockAddsUp) 
     EXPECT_EQ(run->last_time_usec, std::stoull(yaml.at("boot_end_time_usec")) + std::stoull(yaml.at("trace_ticks")) * 500u) << "boot end plus the ticks run, 500 us each";
 }
 
-TEST(FcLinkRun, TwoRunsOfTheSameScriptLeaveTheSameBytesAndTheBootLeavesNoMarkOnTheTrace) {
+TEST(FcLinkRun, TwoRunsOfTheSameScriptLeaveTheSameBytesAndOnlyTheBootNoteInTheTraceHeaderTellsTheBootLength) {
     const std::optional<Driven> a = drive(3, 12);
     const std::optional<Driven> b = drive(3, 12);
     ASSERT_TRUE(a.has_value() && b.has_value());
     EXPECT_TRUE(a->record.files == b->record.files) << "the same script gives the same record, file for file";
     const std::optional<Driven> longer = drive(30, 12);
     ASSERT_TRUE(longer.has_value());
-    EXPECT_TRUE(a->record.files.at("trace.bin") == longer->record.files.at("trace.bin")) << "a boot of 3 steps and one of 30 leave the same trace";
-    EXPECT_TRUE(a->record.files.at("commands.bin") == longer->record.files.at("commands.bin")) << "and the same commands";
+    // trace.bin's header notes the boot (bytes 160 to 176: boot_steps, boot_end_time_usec; fc_host/lockstep.hpp), and its last 64 bytes are the SHA-256 of
+    // everything before them, so they follow the note. Nothing else in it, or in commands.bin, may say how long the boot was.
+    constexpr std::size_t kBootNoteBegin = 160, kBootNoteEnd = 176, kTrailerBytes = 64;
+    const spade::fc::Files short_boot = as_files(a->record);
+    const spade::fc::Files long_boot = as_files(longer->record);
+    const std::string& trace_a = short_boot.at("trace.bin");
+    const std::string& trace_b = long_boot.at("trace.bin");
+    ASSERT_EQ(trace_a.size(), trace_b.size());
+    ASSERT_GT(trace_a.size(), kBootNoteEnd);
+    ASSERT_GT(trace_a.size(), kBootNoteEnd + kTrailerBytes);
+    for (std::size_t i = 0; i < trace_a.size() - kTrailerBytes; ++i) {
+        if (i >= kBootNoteBegin && i < kBootNoteEnd) continue;
+        if (trace_a[i] != trace_b[i]) {
+            ADD_FAILURE() << "trace.bin differs at byte " << i << " outside the boot note: a boot of 3 steps and one of 30 must leave the same trace";
+            break;
+        }
+    }
+    EXPECT_NE(trace_a.substr(kBootNoteBegin, kBootNoteEnd - kBootNoteBegin), trace_b.substr(kBootNoteBegin, kBootNoteEnd - kBootNoteBegin))
+        << "the header does say how long the boot was";
+    EXPECT_EQ(short_boot.at("commands.bin"), long_boot.at("commands.bin")) << "and the commands are the same";
 }
 
 TEST(FcLinkRun, ARecordOfAnExchangeRunFailsTheCheckerWhenAFileIsChanged) {
@@ -193,7 +219,7 @@ TEST(FcLinkRun, ARecordOfAnExchangeRunFailsTheCheckerWhenAFileIsChanged) {
         bytes[bytes.size() / 2] = static_cast<char>(bytes[bytes.size() / 2] ^ 0x01);
         const spade::fc::Report report = spade::fc::check_run_folder(spade::fc::RunFolder{files});
         EXPECT_FALSE(report.ok()) << name;
-        EXPECT_NE(report.find("K5", spade::fc::Verdict::fail), nullptr) << name << ": the manifest's hash no longer matches\n" << report.text();
+        EXPECT_NE(report.find("K2", spade::fc::Verdict::fail), nullptr) << name << ": the manifest's hash no longer matches\n" << report.text();
     }
 }
 
