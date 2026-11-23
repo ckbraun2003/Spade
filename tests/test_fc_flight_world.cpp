@@ -51,6 +51,18 @@ TEST(FcFlightWorld, TheBarometerReadsTheGroundAtTheSameAltitudeAboveSeaLevelAsTh
     EXPECT_TRUE(seen) << "a barometer sample in the first 0.1 s";
 }
 
+// The exchange is told where each sensor sits in the bindings (ExchangeConfig); those indices live in the hashed world header next to the order the world builds
+// them in, not as literals in the live test.
+TEST(FcFlightWorld, TheBindingIndicesNameTheSensorsInTheOrderTheWorldBuildsThem) {
+    std::optional<FlightWorld> w = make_flight_world();
+    ASSERT_TRUE(w.has_value());
+    ASSERT_EQ(w->bindings.size(), 4u);
+    EXPECT_EQ(w->bindings[0].kind, spade::fc_host::SensorKind::imu);
+    EXPECT_EQ(w->bindings[kBaroBinding].kind, spade::fc_host::SensorKind::baro);
+    EXPECT_EQ(w->bindings[kMagBinding].kind, spade::fc_host::SensorKind::mag);
+    EXPECT_EQ(w->bindings[kGnssBinding].kind, spade::fc_host::SensorKind::gnss);
+}
+
 TEST(FcFlightWorld, ACommonDutyControllerTakesTheX500ToTwoMetersAndHoldsItAtASaneDuty) {
     std::optional<FlightWorld> w = make_flight_world();
     ASSERT_TRUE(w.has_value());
