@@ -245,6 +245,7 @@ add_executable(spade_tests
     test_fc_run_folder.cpp
     test_fc_live_harness.cpp
     test_fc_live_px4.cpp
+    test_fc_live_companion.cpp
     test_render_target.cpp
     test_render_scene.cpp
     test_render_tessellate.cpp
