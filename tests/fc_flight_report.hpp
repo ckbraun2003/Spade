@@ -7,8 +7,11 @@
 // the slowest (and when), every exchange over slow_exchange_ms listed with its phase, the time of the first datagram from PX4, and the link's own last_time_usec
 // (the last sensor message sent) against last_reply_time_usec (the last reply accepted).
 // ---------------------------------------------------------------------------
+#include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <map>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -60,7 +63,47 @@ struct FlightRunFacts {
     std::map<uint32_t, uint64_t> by_msgid;
 };
 
-// The report text. RED: not written yet.
-[[nodiscard]] inline std::string format_flight_report(const FlightRunFacts&) { return std::string(); }
+// The report text, one `key: value` per line.
+[[nodiscard]] inline std::string format_flight_report(const FlightRunFacts& f) {
+    std::ostringstream t;
+    const auto yes = [](bool v) { return v ? "yes" : "no"; };
+    const auto ms = [](std::chrono::nanoseconds ns) { return std::chrono::duration<double, std::milli>(ns).count(); };
+    const auto mean = [&](double total) { return f.exchanges == 0 ? 0L : std::lround(total / static_cast<double>(f.exchanges)); };
+    t << "mission_phase: " << f.mission_phase << "\n"
+      << "mission_passed: " << yes(f.mission_passed) << "\n"
+      << "last_armed: " << yes(f.last_armed) << "\n"
+      << "last_altitude_m: " << f.last_altitude_m << "\n"
+      << "landed: " << yes(f.landed) << "\n"
+      << "abort_outcome: " << f.abort_outcome << "\n"
+      << "sim_s: " << f.sim_s << "\n"
+      << "wall_s: " << f.wall_s << "\n"
+      << "boot_steps: " << f.boot_steps << "\n";
+    if (f.first_datagram_wall_s < 0.0) t << "first_datagram_wall_s: none\n";
+    else t << "first_datagram_wall_s: " << f.first_datagram_wall_s << "\n";
+    t << "px4_no_reply: " << f.px4_no_reply << "\npx4_stale_reply: " << f.px4_stale_reply << "\npx4_link_closed: " << f.px4_link_closed
+      << "\nother_refusals: " << f.other_refusals << "\nfirst_refusal: " << f.first_refusal << "\nsend_failures: " << f.send_failures
+      << "\ndatagrams_back: " << f.datagrams_back << "\n";
+    t << "link_sensor_messages: " << f.link.sensor_messages << "\nlink_replies: " << f.link.replies << "\nlink_last_time_usec: " << f.link.last_time_usec
+      << "\nlink_last_reply_time_usec: " << f.link.last_reply_time_usec << "\nlink_wall_wait_max_ms: " << ms(f.link.wall_wait_max)
+      << "\nlink_wall_send_max_ms: " << ms(f.link.wall_send_max) << "\nlink_wall_gap_max_ms: " << ms(f.link.wall_gap_max) << "\n";
+    t << "exchanges: " << f.exchanges << "\n"
+      << "wait_mean_ms: " << mean(f.wait_total_ms) << "\n"
+      << "wait_max_ms: " << f.wait_max_ms << " at sim " << f.wait_max_at_sim_s << " s, wall " << f.wait_max_at_wall_s << " s\n"
+      << "host_gap_mean_ms: " << mean(f.gap_total_ms) << "\n"
+      << "host_gap_max_ms: " << f.gap_max_ms << " at sim " << f.gap_max_at_sim_s << " s, wall " << f.gap_max_at_wall_s << " s\n"
+      << "slow_exchanges: " << f.slow.size() << "\n";
+    for (std::size_t i = 0; i < f.slow.size() && i < kSlowLinesMax; ++i) {
+        const SlowExchange& e = f.slow[i];
+        t << "slow_exchange " << e.index << ": " << (e.boot ? "boot" : "strict") << ", sim " << e.sim_s << " s, wall " << e.wall_s << " s, waited " << e.wait_ms
+          << " ms, host gap before " << e.gap_ms << " ms\n";
+    }
+    if (f.slow.size() > kSlowLinesMax) t << "slow_exchanges_not_listed: " << f.slow.size() - kSlowLinesMax << "\n";
+    for (const spade::fc_link::FlightCheck& c : f.journal)
+        t << "check " << c.name << ": " << (c.pass ? "PASS" : "FAIL") << " measured " << c.measured << " limit " << c.limit << " at " << c.time_s << " s\n";
+    for (const std::string& s : f.sent_log) t << "sent " << s << "\n";
+    for (const AckLine& a : f.acks) t << "ack at " << a.t << " s: command " << a.command << " result " << static_cast<int>(a.result) << "\n";
+    for (const auto& [id, n] : f.by_msgid) t << "msgid_" << id << "_count: " << n << "\n";
+    return t.str();
+}
 
 }  // namespace fc_flight_test

@@ -30,6 +30,7 @@
 #include <variant>
 #include <vector>
 
+#include "fc_flight_report.hpp"
 #include "fc_flight_world.hpp"
 #include "fc_link/autopilot_link.hpp"
 #include "fc_link/companion.hpp"
@@ -44,6 +45,9 @@ namespace {
 using namespace spade::fc_link;
 using namespace std::chrono_literals;
 namespace mav = spade::fc_link::mavlink;
+using fc_flight_test::FlightRunFacts;
+using fc_flight_test::format_flight_report;
+using fc_flight_test::kSlowExchangeMs;
 
 #ifdef _MSC_VER
 #pragma warning(push)
@@ -152,9 +156,26 @@ TEST(FcLiveFlight, Px4FliesTheX500ThroughArmTakeoffHoverAndLand) {
     trace << "t_s,altitude_m,armed,motor0,motor1,motor2,motor3,phase\n";
     double next_trace_s = 0.0;
     const auto wall0 = std::chrono::steady_clock::now();
+    const auto wall_since = [&] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - wall0).count(); };
+    FlightRunFacts facts;  // the report: first datagram, the wait and the host gap of every exchange
+    uint64_t seen_exchanges = 0;
 
     for (uint64_t guard = 0; guard < 100000000ull; ++guard) {
         const auto res = alink->exchange(*host);
+        if (const auto& rep = link->report(); rep.sensor_messages != seen_exchanges) {  // one exchange of the link happened: its wait and the host gap before it
+            seen_exchanges = rep.sensor_messages;
+            const double wait_ms = std::chrono::duration<double, std::milli>(rep.wall_wait_last).count();
+            const double gap_ms = std::chrono::duration<double, std::milli>(rep.wall_gap_last).count();
+            const double sim_now = static_cast<double>(host->sim_time_ns()) * 1e-9;
+            const double wall_now = wall_since();
+            ++facts.exchanges;
+            facts.wait_total_ms += wait_ms;
+            facts.gap_total_ms += gap_ms;
+            if (wait_ms > facts.wait_max_ms) { facts.wait_max_ms = wait_ms; facts.wait_max_at_sim_s = sim_now; facts.wait_max_at_wall_s = wall_now; }
+            if (gap_ms > facts.gap_max_ms) { facts.gap_max_ms = gap_ms; facts.gap_max_at_sim_s = sim_now; facts.gap_max_at_wall_s = wall_now; }
+            if (wait_ms > kSlowExchangeMs || gap_ms > kSlowExchangeMs)
+                facts.slow.push_back({rep.sensor_messages, sim_now, wall_now, wait_ms, gap_ms, rep.boot_end_time_usec == 0});
+        }
         if (!res) {
             const std::string why = res.error().context;
             if (first_refusal.empty()) first_refusal = why;
@@ -176,7 +197,7 @@ TEST(FcLiveFlight, Px4FliesTheX500ThroughArmTakeoffHoverAndLand) {
         for (;;) {  // every datagram that has arrived, never waiting
             auto d = (*udp)->read_some(0ms);
             if (!d || d->empty()) break;
-            ++datagrams;
+            if (++datagrams == 1) facts.first_datagram_wall_s = wall_since();
             parser.feed(*d);
             while (auto f = parser.next()) {
                 ++by_msgid[f->msgid];
@@ -210,25 +231,30 @@ TEST(FcLiveFlight, Px4FliesTheX500ThroughArmTakeoffHoverAndLand) {
     const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall0).count();
     const double sim_s = static_cast<double>(host->sim_time_ns()) * 1e-9;
 
-    std::ostringstream text;
-    text << "mission_phase: " << phase_name(mission.phase()) << "\n"
-         << "mission_passed: " << (mission.passed() ? "yes" : "no") << "\n"
-         << "last_armed: " << (mission.last_armed() ? "yes" : "no") << "\n"
-         << "last_altitude_m: " << mission.last_altitude_m() << "\n"
-         << "landed: " << (mission.landed() ? "yes" : "no") << "\n"
-         << "abort_outcome: " << abort_name(mission.abort_outcome()) << "\n"
-         << "sim_s: " << sim_s << "\n"
-         << "wall_s: " << wall << "\n"
-         << "boot_steps: " << link->report().boot_steps << "\n"
-         << "px4_no_reply: " << no_reply << "\npx4_stale_reply: " << stale_reply << "\npx4_link_closed: " << link_closed << "\nother_refusals: " << other_refusal
-         << "\nfirst_refusal: " << first_refusal << "\nsend_failures: " << send_failures << "\ndatagrams_back: " << datagrams << "\n";
-    for (const FlightCheck& c : mission.journal())
-        text << "check " << c.name << ": " << (c.pass ? "PASS" : "FAIL") << " measured " << c.measured << " limit " << c.limit << " at " << c.time_s << " s\n";
-    for (const std::string& s : sent_log) text << "sent " << s << "\n";
-    for (const AckRecord& a : acks) text << "ack at " << a.t << " s: command " << a.command << " result " << static_cast<int>(a.result) << "\n";
-    for (const auto& [id, n] : by_msgid) text << "msgid_" << id << "_count: " << n << "\n";
-    std::ofstream(out / "flight-report.txt") << text.str();
-    std::cout << text.str();
+    facts.mission_phase = phase_name(mission.phase());
+    facts.mission_passed = mission.passed();
+    facts.last_armed = mission.last_armed();
+    facts.last_altitude_m = mission.last_altitude_m();
+    facts.landed = mission.landed();
+    facts.abort_outcome = abort_name(mission.abort_outcome());
+    facts.sim_s = sim_s;
+    facts.wall_s = wall;
+    facts.boot_steps = link->report().boot_steps;
+    facts.px4_no_reply = no_reply;
+    facts.px4_stale_reply = stale_reply;
+    facts.px4_link_closed = link_closed;
+    facts.other_refusals = other_refusal;
+    facts.first_refusal = first_refusal;
+    facts.send_failures = send_failures;
+    facts.datagrams_back = datagrams;
+    facts.link = link->report();
+    facts.journal = mission.journal();
+    facts.sent_log = sent_log;
+    for (const AckRecord& a : acks) facts.acks.push_back({a.t, a.command, a.result});
+    facts.by_msgid = by_msgid;
+    const std::string text = format_flight_report(facts);
+    std::ofstream(out / "flight-report.txt") << text;
+    std::cout << text;
 
     EXPECT_EQ(no_reply + stale_reply + link_closed + other_refusal, 0u) << first_refusal;
     EXPECT_EQ(send_failures, 0u);
