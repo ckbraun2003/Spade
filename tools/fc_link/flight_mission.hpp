@@ -72,17 +72,21 @@ public:
     [[nodiscard]] const std::vector<FlightCheck>& journal() const { return journal_; }
     // A failed check once the vehicle is armed (the takeoff sent) ABORTS TO LAND: LAND is sent at once and the mission waits up to land_timeout_s for
     // landed AND disarmed before it ends (never passed). A failure before that (arm denied, arm timed out) only ends: nothing is in the air.
-    [[nodiscard]] AbortOutcome abort_outcome() const { return AbortOutcome::none; }  // RED
+    [[nodiscard]] AbortOutcome abort_outcome() const { return abort_outcome_; }
     // The last observation: armed, the altitude, and landed (below landed_height_m and disarmed): what the report prints when a run stops.
-    [[nodiscard]] bool last_armed() const { return false; }         // RED
-    [[nodiscard]] double last_altitude_m() const { return 0.0; }    // RED
-    [[nodiscard]] bool landed() const { return false; }             // RED
+    [[nodiscard]] bool last_armed() const { return last_armed_; }
+    [[nodiscard]] double last_altitude_m() const { return last_altitude_m_; }
+    [[nodiscard]] bool landed() const { return last_altitude_m_ < config_.landed_height_m && !last_armed_; }
 
 private:
     FlightConfig config_;
     Phase phase_ = Phase::boot;
     std::vector<FlightCheck> journal_;
-    double first_arm_s_ = 0.0, last_arm_s_ = 0.0, takeoff_s_ = 0.0, hover_start_s_ = 0.0, hover_ref_m_ = 0.0, max_dev_m_ = 0.0, land_s_ = 0.0;
+    double first_arm_s_ = 0.0, last_arm_s_ = 0.0, takeoff_s_ = 0.0, hover_start_s_ = 0.0, max_dev_m_ = 0.0, land_s_ = 0.0, abort_s_ = 0.0;
+    bool armed_sent_ = false;  // the takeoff has been sent: a failure from here on aborts to land
+    bool last_armed_ = false;
+    double last_altitude_m_ = 0.0;
+    AbortOutcome abort_outcome_ = AbortOutcome::none;
 };
 
 }  // namespace spade::fc_link

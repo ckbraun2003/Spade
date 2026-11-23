@@ -12,9 +12,19 @@ constexpr uint16_t kCmdArm = 400;
 
 std::vector<mavlink::CommandLong> FlightMission::step(const FlightObservation& o) {
     std::vector<mavlink::CommandLong> out;
+    last_armed_ = o.armed;
+    last_altitude_m_ = o.altitude_m;
+    // A failed check: once armed (the takeoff sent) the vehicle is in the air or about to be, so it ABORTS TO LAND (LAND now, then wait for landed and
+    // disarmed); before that, or when the land command is already out, it only ends.
     const auto fail = [&](const char* name, double measured, double limit) {
         journal_.push_back({name, false, measured, limit, o.time_s});
-        phase_ = Phase::failed;
+        if (armed_sent_ && phase_ != Phase::land) {
+            out.push_back(mavlink::command_land());
+            abort_s_ = o.time_s;
+            phase_ = Phase::aborting;
+        } else {
+            phase_ = Phase::failed;
+        }
     };
     switch (phase_) {
         case Phase::boot:
@@ -34,6 +44,7 @@ std::vector<mavlink::CommandLong> FlightMission::step(const FlightObservation& o
                 journal_.push_back({"armed_within_s", true, since, config_.arm_timeout_s, o.time_s});
                 out.push_back(mavlink::command_takeoff(static_cast<float>(config_.home_amsl_m + config_.takeoff_height_m)));
                 takeoff_s_ = o.time_s;
+                armed_sent_ = true;
                 phase_ = Phase::takeoff;
             } else if (since >= config_.arm_timeout_s - kEps) {
                 fail("armed_within_s", since, config_.arm_timeout_s);
@@ -47,17 +58,27 @@ std::vector<mavlink::CommandLong> FlightMission::step(const FlightObservation& o
             const double off = std::fabs(o.altitude_m - config_.takeoff_height_m);
             if (off <= config_.takeoff_band_m + kEps) {
                 journal_.push_back({"takeoff_height", true, off, config_.takeoff_band_m, o.time_s});
+                phase_ = Phase::settle;
+                [[fallthrough]];  // it may already be inside the hover band: judged on this same observation
+            } else {
+                if (o.time_s - takeoff_s_ >= config_.takeoff_timeout_s - kEps) fail("takeoff_height", off, config_.takeoff_band_m);
+                break;
+            }
+        }
+        case Phase::settle: {
+            const double off = std::fabs(o.altitude_m - config_.takeoff_height_m);
+            if (off <= config_.hover_band_m + kEps) {
+                journal_.push_back({"settled_within_m", true, off, config_.hover_band_m, o.time_s});
                 hover_start_s_ = o.time_s;
-                hover_ref_m_ = o.altitude_m;
-                max_dev_m_ = 0.0;
+                max_dev_m_ = off;
                 phase_ = Phase::hover;
             } else if (o.time_s - takeoff_s_ >= config_.takeoff_timeout_s - kEps) {
-                fail("takeoff_height", off, config_.takeoff_band_m);
+                fail("settled_within_m", off, config_.hover_band_m);
             }
             break;
         }
         case Phase::hover: {
-            const double dev = std::fabs(o.altitude_m - hover_ref_m_);
+            const double dev = std::fabs(o.altitude_m - config_.takeoff_height_m);  // against the setpoint, not where the hover began
             max_dev_m_ = std::max(max_dev_m_, dev);
             if (dev > config_.hover_band_m + kEps) {
                 fail("hover_within_m", dev, config_.hover_band_m);
@@ -76,6 +97,19 @@ std::vector<mavlink::CommandLong> FlightMission::step(const FlightObservation& o
                 phase_ = Phase::done;
             } else if (since >= config_.land_timeout_s - kEps) {
                 fail("landed_within_s", since, config_.land_timeout_s);
+            }
+            break;
+        }
+        case Phase::aborting: {
+            const double since = o.time_s - abort_s_;
+            if (o.altitude_m < config_.landed_height_m && !o.armed) {
+                journal_.push_back({"abort_landed_disarmed_s", true, since, config_.land_timeout_s, o.time_s});
+                abort_outcome_ = AbortOutcome::landed_and_disarmed;
+                phase_ = Phase::failed;
+            } else if (since >= config_.land_timeout_s - kEps) {
+                journal_.push_back({"abort_landed_disarmed_s", false, since, config_.land_timeout_s, o.time_s});
+                abort_outcome_ = AbortOutcome::expired;
+                phase_ = Phase::failed;
             }
             break;
         }
