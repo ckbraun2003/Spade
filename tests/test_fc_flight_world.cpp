@@ -14,6 +14,7 @@
 #include "../sandbox/flight_controller.hpp"
 #include "analysis/case.hpp"
 #include "fc_flight_world.hpp"
+#include "fc_link/autopilot_link.hpp"
 
 namespace {
 
@@ -102,6 +103,47 @@ TEST(FcFlightWorld, TheBarometerAndMagnetometerNeverRepeatAReadingBitForBitAtRes
     };
     EXPECT_LT(longest_run(baro), 10u) << "of " << baro.size() << " barometer samples";
     EXPECT_LT(longest_run(mag), 10u) << "of " << mag.size() << " magnetometer samples";
+}
+
+// PX4 fails a sensor that sends no new sample within its time-out. What WE send is fixed by construction (the barometer's period is 40 ticks, exactly five
+// 8-tick IMU messages; the magnetometer's 20 ticks, alternately 2 and 3 messages), and this pins it through the real AutopilotLink over 12 s: a barometer group on
+// every fifth message (20 ms apart, never more), a magnetometer group never more than 12 ms apart. A gap PX4's log shows around the STALE lines is therefore not ours.
+TEST(FcFlightWorld, TheBarometerAndMagnetometerGroupsReachHilSensorOnScheduleWithNoGapOverTwelveSeconds) {
+    std::optional<FlightWorld> w = make_flight_world();
+    ASSERT_TRUE(w.has_value());
+    auto host = spade::fc_host::LockstepHost::open(w->sim, w->vehicle, w->bindings);
+    ASSERT_TRUE(host.has_value()) << host.error().context;
+    ASSERT_TRUE(w->model.model.propulsion.has_value());
+
+    constexpr uint32_t kBaroBits = 0x1A00u, kMagBits = 0x01C0u;
+    std::vector<uint64_t> baro_at, mag_at;
+    spade::fc_link::ExchangeConfig cfg;
+    cfg.chain = &*w->model.model.propulsion;
+    cfg.baro_binding = kBaroBinding;
+    cfg.mag_binding = kMagBinding;
+    auto link = spade::fc_link::AutopilotLink::create(
+        [&](const spade::fc_link::mavlink::HilSensor& m, const std::optional<spade::fc_link::mavlink::HilGps>&) -> spade::Result<spade::fc_link::ActuatorReply> {
+            if ((m.fields_updated & kBaroBits) == kBaroBits) baro_at.push_back(m.time_usec);
+            if ((m.fields_updated & kMagBits) == kMagBits) mag_at.push_back(m.time_usec);
+            spade::fc_link::ActuatorReply r;
+            for (std::size_t i = 0; i < 4; ++i) r.controls[i] = 0.45f;
+            r.armed = true;
+            r.lockstep = true;
+            return r;
+        },
+        cfg);
+    ASSERT_TRUE(link.has_value()) << link.error().context;
+    for (int i = 0; i < 3000; ++i) {
+        const auto step = link->exchange(*host);
+        ASSERT_TRUE(step.has_value()) << "exchange " << i << ": " << step.error().context;
+    }
+    ASSERT_GE(baro_at.size(), 590u);
+    ASSERT_GE(mag_at.size(), 1180u);
+    uint64_t baro_gap = 0, mag_gap = 0;
+    for (std::size_t i = 1; i < baro_at.size(); ++i) baro_gap = std::max(baro_gap, baro_at[i] - baro_at[i - 1]);
+    for (std::size_t i = 1; i < mag_at.size(); ++i) mag_gap = std::max(mag_gap, mag_at[i] - mag_at[i - 1]);
+    EXPECT_EQ(baro_gap, 20000u) << "us between barometer groups, the worst of " << baro_at.size();
+    EXPECT_LE(mag_gap, 12000u) << "us between magnetometer groups, the worst of " << mag_at.size();
 }
 
 TEST(FcFlightWorld, ACommonDutyControllerTakesTheX500ToTwoMetersAndHoldsItAtASaneDuty) {
