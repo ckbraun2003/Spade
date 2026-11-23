@@ -94,12 +94,76 @@ struct RunFolder {
     // The run's simulated time at its last step, in microseconds: `last_time_usec` of the run's lockstep report (see last_time_usec_of). It is
     // not in the record either, so the caller gives it; with none, K4.span stays unchecked.
     std::optional<uint64_t> simulated_time_us;
+    // The airframe file the run was given (tools/fc_link/px4/airframes/<n>_..., the file the image holds), as text: with it K4.params compares the
+    // log's parameters to the file's `param set-default` lines. It is not in the record either; with none K4.params stays unchecked.
+    std::optional<std::string> airframe_file;
 
     // Constructors, not aggregate initialisation: gcc's -Werror=missing-field-initializers refuses `RunFolder{files}` with the log left out.
     RunFolder() = default;
-    RunFolder(Files f, std::optional<std::string> log = std::nullopt, std::optional<uint64_t> sim_us = std::nullopt)
-        : files(std::move(f)), autopilot_log(std::move(log)), simulated_time_us(sim_us) {}
+    RunFolder(Files f, std::optional<std::string> log = std::nullopt, std::optional<uint64_t> sim_us = std::nullopt,
+              std::optional<std::string> airframe = std::nullopt)
+        : files(std::move(f)), autopilot_log(std::move(log)), simulated_time_us(sim_us), airframe_file(std::move(airframe)) {}
 };
+
+// The firmware the run is pinned to: PX4 v1.17.0, commit d6f12ad1c4f70ad3230afd7d86e971421e02fef4 (tools/fc_link/px4/Dockerfile:3 and the fc-links plan).
+// The log's `ver_sw_release` is PX4's own 0xMMmmPPtt (major 1, minor 0x11 = 17, patch 0, type 0xFF = release): read from the two real logs.
+inline constexpr std::string_view kPinnedPx4Commit = "d6f12ad1c4f70ad3230afd7d86e971421e02fef4";
+inline constexpr uint32_t kPinnedPx4Release = 0x011100FF;
+
+// "1.17.0 (release)" from a ver_sw_release value.
+[[nodiscard]] inline std::string release_text(uint32_t v) {
+    return std::to_string(v >> 24) + "." + std::to_string((v >> 16) & 0xFF) + "." + std::to_string((v >> 8) & 0xFF) + ((v & 0xFF) == 0xFF ? " (release)" : " (type " + std::to_string(v & 0xFF) + ")");
+}
+
+struct AirframeParam {
+    std::string name;
+    std::string value;  // the text, as the file wrote it
+};
+
+// The `param set-default NAME VALUE` and `param set NAME VALUE` lines of an airframe file (a shell script: other lines, comments and blanks are not
+// parameters). `unread` names the first parameter line whose value is not a plain decimal number, or that has no value.
+struct AirframeParams {
+    std::vector<AirframeParam> params;
+    std::string unread;
+};
+
+[[nodiscard]] inline bool plain_number(std::string_view t) {
+    size_t i = (!t.empty() && (t[0] == '-' || t[0] == '+')) ? 1 : 0;
+    bool digit = false, dot = false;
+    for (; i < t.size(); ++i) {
+        if (t[i] >= '0' && t[i] <= '9') digit = true;
+        else if (t[i] == '.' && !dot) dot = true;
+        else return false;
+    }
+    return digit;
+}
+
+[[nodiscard]] inline AirframeParams airframe_params_of(std::string_view text) {
+    AirframeParams out;
+    for (size_t at = 0; at < text.size();) {
+        const size_t nl = text.find('\n', at);
+        const size_t end = nl == std::string_view::npos ? text.size() : nl;
+        std::string_view line = text.substr(at, end - at);
+        at = end + 1;
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) line.remove_suffix(1);
+        while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) line.remove_prefix(1);
+        std::vector<std::string_view> w;
+        for (size_t p = 0; p < line.size();) {
+            while (p < line.size() && (line[p] == ' ' || line[p] == '\t')) ++p;
+            const size_t q = line.find_first_of(" \t", p);
+            const size_t e = q == std::string_view::npos ? line.size() : q;
+            if (e > p) w.push_back(line.substr(p, e - p));
+            p = e;
+        }
+        if (w.size() < 2 || w[0] != "param" || (w[1] != "set-default" && w[1] != "set")) continue;
+        if (w.size() != 4 || !plain_number(w[3])) {
+            if (out.unread.empty()) out.unread = w.size() >= 3 ? std::string(w[2]) : std::string("(no name)");
+            continue;
+        }
+        out.params.push_back({std::string(w[2]), std::string(w[3])});
+    }
+    return out;
+}
 
 // `last_time_usec: <n>` from a lockstep report's text (the report fc-live writes beside the record): the run's simulated time at its last step.
 [[nodiscard]] inline std::optional<uint64_t> last_time_usec_of(std::string_view report) {
@@ -553,6 +617,58 @@ inline Report check_run_folder(const RunFolder& folder) {
         const UlogResult u = read_ulog(*folder.autopilot_log);
         add("K4.log", u.kind == UlogResult::Kind::well_formed ? Verdict::pass : (u.kind == UlogResult::Kind::unread ? Verdict::unchecked : Verdict::fail), u.detail);
         if (u.kind != UlogResult::Kind::well_formed) {
+            add("K4.firmware", Verdict::unchecked, "the log was not read to its end, so its version was not read");
+            add("K4.params", Verdict::unchecked, "the log was not read to its end, so its parameters were not read");
+        } else {
+            const bool hex40 = u.ver_sw.size() == 40 && std::all_of(u.ver_sw.begin(), u.ver_sw.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
+            if (!u.has_ver_sw || !u.has_ver_sw_release) {
+                add("K4.firmware", Verdict::fail, std::string("the log carries no ") + (u.has_ver_sw ? "ver_sw_release" : "ver_sw") + " information message, so its firmware is not identified");
+            } else if (!hex40) {
+                add("K4.firmware", Verdict::fail, "ver_sw is not a 40-digit lower-case commit hash (" + std::to_string(u.ver_sw.size()) + " bytes)");
+            } else if (u.ver_sw != kPinnedPx4Commit) {
+                add("K4.firmware", Verdict::fail, "the firmware commit is " + u.ver_sw.substr(0, 8) + ", not the pinned " + std::string(kPinnedPx4Commit.substr(0, 8)));
+            } else if (u.ver_sw_release != kPinnedPx4Release) {
+                add("K4.firmware", Verdict::fail, "ver_sw_release is " + release_text(u.ver_sw_release) + ", not the pinned " + release_text(kPinnedPx4Release));
+            } else {
+                add("K4.firmware", Verdict::pass, "PX4 " + release_text(u.ver_sw_release) + ", commit " + u.ver_sw.substr(0, 8) + " = the pinned v1.17.0");
+            }
+
+            if (!folder.airframe_file.has_value()) {
+                add("K4.params", Verdict::unchecked, "no airframe file was given to the checker (the file the image holds; it is not in the record)");
+            } else {
+                const AirframeParams af = airframe_params_of(*folder.airframe_file);
+                std::string bad;
+                size_t same = 0;
+                for (const AirframeParam& p : af.params) {
+                    const auto it = u.params.find(p.name);
+                    if (it == u.params.end()) {
+                        bad += (bad.empty() ? "" : "; ") + p.name + " is not in the log's parameters";
+                        continue;
+                    }
+                    bool equal = false;
+                    std::string seen;
+                    if (it->second.is_float) {
+                        equal = std::strtof(p.value.c_str(), nullptr) == it->second.f;
+                        seen = std::to_string(it->second.f);
+                    } else {
+                        equal = p.value.find('.') == std::string::npos && std::strtol(p.value.c_str(), nullptr, 10) == it->second.i;
+                        seen = std::to_string(it->second.i);
+                    }
+                    if (equal) ++same;
+                    else bad += (bad.empty() ? "" : "; ") + p.name + " is " + seen + " in the log, " + p.value + " in the file";
+                }
+                if (af.params.empty() && af.unread.empty()) {
+                    add("K4.params", Verdict::unchecked, "the airframe file holds no `param set-default` line, so there is nothing to compare");
+                } else if (!bad.empty()) {
+                    add("K4.params", Verdict::fail, bad);
+                } else if (!af.unread.empty()) {
+                    add("K4.params", Verdict::unchecked, std::to_string(same) + " of the file's parameters equal the log's, but the line for " + af.unread + " has no plain number value and was not compared");
+                } else {
+                    add("K4.params", Verdict::pass, "all " + std::to_string(same) + " `param set-default` values of the airframe file equal the log's parameters (the log holds " + std::to_string(u.params.size()) + ")");
+                }
+            }
+        }
+        if (u.kind != UlogResult::Kind::well_formed) {
             add("K4.span", Verdict::unchecked, "the log was not read to its end, so its stamps were not read");
         } else if (!folder.simulated_time_us.has_value()) {
             add("K4.span", Verdict::unchecked, "no simulated time was given (the run's lockstep report holds it as last_time_usec)");
@@ -575,6 +691,8 @@ inline Report check_run_folder(const RunFolder& folder) {
     } else {
         add("K4.log", Verdict::unchecked, "no autopilot log was given to the checker (it lives beside the record, not in it)");
         add("K4.span", Verdict::unchecked, "no autopilot log was given to the checker");
+        add("K4.firmware", Verdict::unchecked, "no autopilot log was given to the checker");
+        add("K4.params", Verdict::unchecked, "no autopilot log was given to the checker");
     }
 
     // K5: the copies match their hashes; the mode is one of two; a measured run names its box and tree.

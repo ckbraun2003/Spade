@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -153,7 +154,7 @@ TEST(FcRunFolder, TheGoodBudgetFolderPassesEveryImplementedCheckAndNamesWhatIsUn
         EXPECT_NE(c.verdict, Verdict::fail) << c.id << ": " << c.detail;
         EXPECT_NE(c.verdict, Verdict::absent) << c.id << ": " << c.detail;
     }
-    EXPECT_EQ(unchecked, (std::set<std::string>{"K4.log", "K4.span", "K6.recount", "K11.replay"})) << r.text();
+    EXPECT_EQ(unchecked, (std::set<std::string>{"K4.log", "K4.span", "K4.firmware", "K4.params", "K6.recount", "K11.replay"})) << r.text();
     for (const char* id : {"K1", "K2", "K3", "K5", "K6", "K7", "K9", "K10"}) {
         const auto* c = r.find(id, Verdict::pass);
         EXPECT_NE(c, nullptr) << id << " has no passing result\n" << r.text();
@@ -676,7 +677,7 @@ TEST(FcRunFolder, TheTraceAndCommandsOfCoresSampleRunAreRecomputedAndAgree) {
     std::set<std::string> unchecked;
     for (const auto& c : r.results)
         if (c.verdict == Verdict::unchecked) unchecked.insert(c.id);
-    EXPECT_EQ(unchecked, (std::set<std::string>{"K4.log", "K4.span", "K6.recount", "K11.replay"}));
+    EXPECT_EQ(unchecked, (std::set<std::string>{"K4.log", "K4.span", "K4.firmware", "K4.params", "K6.recount", "K11.replay"}));
 }
 
 TEST(FcRunFolder, TheLoaderReadsAFolderFromDiskAndTheVerdictIsTheSame) {
@@ -734,8 +735,8 @@ struct UlogCase {
 TEST(FcRunFolder, K4_AWellFormedLogIsReadAndCounted) {
     const UlogResult r = read_msgs(ux::good_messages());
     EXPECT_EQ(r.kind, UlogResult::Kind::well_formed) << r.detail;
-    EXPECT_EQ(r.messages, 17u);
-    EXPECT_EQ(r.definitions, 8u);
+    EXPECT_EQ(r.messages, 18u);
+    EXPECT_EQ(r.definitions, 9u);
     EXPECT_EQ(r.data_messages, 3u);
     EXPECT_EQ(r.subscriptions, 2u);
     EXPECT_EQ(r.syncs, 1u);
@@ -988,6 +989,159 @@ TEST(FcRunFolder, K4_TheRunsSimulatedTimeIsReadFromTheLockstepReport) {
     EXPECT_FALSE(last_time_usec_of("not_last_time_usec: 5\n").has_value()) << "the key is the line's start";
 }
 
+// K4.firmware: the log's `ver_sw` (the git commit) and `ver_sw_release` (PX4's 0xMMmmPPtt) must be the pinned v1.17.0, d6f12ad1.
+namespace {
+
+[[nodiscard]] const spade::fc::CheckResult* result_of(const Report& r, std::string_view id) {
+    for (const auto& c : r.results)
+        if (c.id == id) return &c;
+    return nullptr;
+}
+
+[[nodiscard]] std::string float_bytes(float f) {
+    std::string s(4, '\0');
+    std::memcpy(s.data(), &f, 4);
+    return s;
+}
+
+[[nodiscard]] std::string int_bytes(int32_t v) {
+    std::string s(4, '\0');
+    std::memcpy(s.data(), &v, 4);
+    return s;
+}
+
+}  // namespace
+
+TEST(FcRunFolder, K4_TheFirmwareMustBeThePinnedCommitAndRelease) {
+    using namespace ux;
+    const auto verdict_of = [](const std::vector<Msg>& v) {
+        const Report r = spade::fc::check_run_folder(spade::fc::RunFolder{good_measured(), assemble(v)});
+        const auto* c = result_of(r, "K4.firmware");
+        return c != nullptr ? std::make_pair(c->verdict, c->detail) : std::make_pair(Verdict::absent, std::string("no K4.firmware row"));
+    };
+    const std::vector<Msg> good = good_messages();
+    const auto ok = verdict_of(good);
+    EXPECT_EQ(ok.first, Verdict::pass) << ok.second;
+    EXPECT_NE(ok.second.find("PX4 1.17.0 (release), commit d6f12ad1"), std::string::npos) << ok.second;
+
+    std::vector<Msg> other_commit = good;
+    other_commit[kInfoSw].body = keyed("char[40] ver_sw", "0123456789abcdef0123456789abcdef01234567");
+    auto r = verdict_of(other_commit);
+    EXPECT_EQ(r.first, Verdict::fail);
+    EXPECT_NE(r.second.find("commit is 01234567, not the pinned d6f12ad1"), std::string::npos) << r.second;
+
+    std::vector<Msg> old_release = good;
+    old_release[kInfoVer].body = keyed("uint32_t ver_sw_release", std::string("\xFF\x02\x04\x01", 4));  // 1.4.2
+    r = verdict_of(old_release);
+    EXPECT_EQ(r.first, Verdict::fail);
+    EXPECT_NE(r.second.find("1.4.2 (release), not the pinned 1.17.0 (release)"), std::string::npos) << r.second;
+
+    std::vector<Msg> dev_build = good;
+    dev_build[kInfoVer].body = keyed("uint32_t ver_sw_release", std::string("\x01\x00\x11\x01", 4));  // type 1, not a release
+    r = verdict_of(dev_build);
+    EXPECT_EQ(r.first, Verdict::fail);
+    EXPECT_NE(r.second.find("(type 1)"), std::string::npos) << r.second;
+
+    std::vector<Msg> no_sw = good;
+    no_sw.erase(no_sw.begin() + kInfoSw);
+    r = verdict_of(no_sw);
+    EXPECT_EQ(r.first, Verdict::fail);
+    EXPECT_NE(r.second.find("no ver_sw information message"), std::string::npos) << r.second;
+
+    std::vector<Msg> no_release = good;
+    no_release.erase(no_release.begin() + kInfoVer);
+    r = verdict_of(no_release);
+    EXPECT_EQ(r.first, Verdict::fail);
+    EXPECT_NE(r.second.find("no ver_sw_release information message"), std::string::npos) << r.second;
+
+    std::vector<Msg> not_hash = good;
+    not_hash[kInfoSw].body = keyed("char[40] ver_sw", "D6F12AD1C4F70AD3230AFD7D86E971421E02FEF4");  // upper case
+    r = verdict_of(not_hash);
+    EXPECT_EQ(r.first, Verdict::fail);
+    EXPECT_NE(r.second.find("not a 40-digit lower-case commit hash"), std::string::npos) << r.second;
+    EXPECT_EQ(r.second.find("D6F12AD1"), std::string::npos) << "the detail never quotes the log's bytes: " << r.second;
+
+    std::vector<Msg> unknown = good;
+    unknown.insert(unknown.begin() + kSubGyro, Msg{'Z', "x"});
+    EXPECT_EQ(verdict_of(unknown).first, Verdict::unchecked) << "an unread log's version is not read";
+    const Report none = spade::fc::check_run_folder(spade::fc::RunFolder{good_measured()});
+    EXPECT_NE(none.find("K4.firmware", Verdict::unchecked), nullptr) << none.text();
+}
+
+// K4.params: every `param set-default NAME VALUE` of the airframe file is the log's value of that parameter (the log holds the parameters in effect).
+TEST(FcRunFolder, K4_TheAirframeFilesParametersMustEqualTheLogs) {
+    using namespace ux;
+    std::vector<Msg> v = good_messages();
+    v.insert(v.begin() + kMulti, Msg{'P', keyed("float CA_ROTOR0_PX", float_bytes(0.13F))});
+    v.insert(v.begin() + kMulti, Msg{'P', keyed("int32_t CA_ROTOR_COUNT", int_bytes(4))});
+    v.insert(v.begin() + kMulti, Msg{'P', keyed("float MPC_THR_HOVER", float_bytes(0.60F))});
+    v.insert(v.begin() + kMulti, Msg{'P', keyed("char[8] SOME_STRING", "abcdefgh")});  // another type: not kept
+    const std::string log = assemble(v);
+    const UlogResult read = read_msgs(v);
+    ASSERT_EQ(read.kind, UlogResult::Kind::well_formed) << read.detail;
+    EXPECT_EQ(read.params.size(), 4u) << "SYS_AUTOSTART of the fixture and the three added; the string parameter is not kept";
+
+    const std::string header_lines =
+        "#!/bin/sh\n#\n# @name Test x500\n#\n. ${R}etc/init.d/rc.mc_defaults\n\n";
+    const auto check = [&](const std::string& airframe) {
+        const Report r = spade::fc::check_run_folder(spade::fc::RunFolder{good_measured(), log, std::nullopt, airframe});
+        const auto* c = result_of(r, "K4.params");
+        return c != nullptr ? std::make_pair(c->verdict, c->detail) : std::make_pair(Verdict::absent, std::string("no K4.params row"));
+    };
+    auto r = check(header_lines + "param set-default CA_ROTOR_COUNT 4\nparam set-default CA_ROTOR0_PX 0.13\nparam set-default MPC_THR_HOVER 0.60\n");
+    EXPECT_EQ(r.first, Verdict::pass) << r.second;
+    EXPECT_NE(r.second.find("all 3"), std::string::npos) << r.second;
+    EXPECT_NE(r.second.find("the log holds 4"), std::string::npos) << r.second;
+
+    r = check(header_lines + "param set-default CA_ROTOR_COUNT 4\r\nparam set CA_ROTOR0_PX 0.13\r\n  param   set-default\tMPC_THR_HOVER   0.6  \r\n");
+    EXPECT_EQ(r.first, Verdict::pass) << "CRLF, `param set`, extra blanks: " << r.second;
+
+    r = check(header_lines + "param set-default MPC_THR_HOVER 0.55\n");
+    EXPECT_EQ(r.first, Verdict::fail);
+    EXPECT_NE(r.second.find("MPC_THR_HOVER is 0.6"), std::string::npos) << r.second;
+    EXPECT_NE(r.second.find("0.55 in the file"), std::string::npos) << r.second;
+
+    r = check(header_lines + "param set-default NAV_DLL_ACT 0\n");
+    EXPECT_EQ(r.first, Verdict::fail);
+    EXPECT_NE(r.second.find("NAV_DLL_ACT is not in the log's parameters"), std::string::npos) << r.second;
+
+    r = check(header_lines + "param set-default CA_ROTOR_COUNT 4.0\n");
+    EXPECT_EQ(r.first, Verdict::fail) << "an integer parameter written with a decimal point is not the same text";
+
+    r = check(header_lines + "param set-default CA_ROTOR_COUNT 5\nparam set-default MPC_THR_HOVER 0.55\nparam set-default NAV_DLL_ACT 0\n");
+    EXPECT_EQ(r.first, Verdict::fail);
+    EXPECT_NE(r.second.find("CA_ROTOR_COUNT is 4 in the log, 5 in the file; MPC_THR_HOVER"), std::string::npos) << "every difference is named: " << r.second;
+    EXPECT_NE(r.second.find("NAV_DLL_ACT is not in"), std::string::npos) << r.second;
+
+    r = check(header_lines + "param set-default CA_ROTOR_COUNT 4\nparam set-default PWM_MAIN_FUNC1 $FUNC\n");
+    EXPECT_EQ(r.first, Verdict::unchecked) << "a value that is not a plain number is named and not compared: " << r.second;
+    EXPECT_NE(r.second.find("PWM_MAIN_FUNC1"), std::string::npos) << r.second;
+
+    r = check(header_lines);
+    EXPECT_EQ(r.first, Verdict::unchecked) << "a file with no parameter line has nothing to compare: " << r.second;
+
+    const Report none = spade::fc::check_run_folder(spade::fc::RunFolder{good_measured(), log});
+    EXPECT_NE(none.find("K4.params", Verdict::unchecked), nullptr) << none.text();
+}
+
+TEST(FcRunFolder, K4_TheAirframeFilesParameterLinesAreRead) {
+    const spade::fc::AirframeParams p = spade::fc::airframe_params_of(
+        "#!/bin/sh\r\n# param set-default IN_A_COMMENT 1\r\n. ${R}etc/init.d/rc.mc_defaults\r\nparam set-default A_B 0.25\r\n"
+        "\tparam set C_D -3\nparam show X\nparam set-default NO_VALUE\nparam set-default E_F 1e5\nparam set-default G_H +7\nparam reset_all\n");
+    ASSERT_EQ(p.params.size(), 3u);
+    EXPECT_EQ(p.params[0].name, "A_B");
+    EXPECT_EQ(p.params[0].value, "0.25");
+    EXPECT_EQ(p.params[1].name, "C_D");
+    EXPECT_EQ(p.params[1].value, "-3");
+    EXPECT_EQ(p.params[2].name, "G_H");
+    EXPECT_EQ(p.unread, "NO_VALUE") << "the first line without a plain number value";
+    EXPECT_TRUE(spade::fc::plain_number("-0.5"));
+    EXPECT_FALSE(spade::fc::plain_number("1e5"));
+    EXPECT_FALSE(spade::fc::plain_number("."));
+    EXPECT_FALSE(spade::fc::plain_number("1.2.3"));
+    EXPECT_FALSE(spade::fc::plain_number(""));
+}
+
 // A real PX4 log: SPADE_FC_ULOG names a .ulg file (for example one a live fc run left in px4-log/); unset, the case skips by name, so the 12 MB logs of
 // the live runs are never committed. It checks the reader against the real thing, including the message types and sizes the spec page extract lacked.
 TEST(FcRunFolder, TheRealPx4LogIsWellFormed) {
@@ -1007,6 +1161,10 @@ namespace {
 #pragma warning(push)
 #pragma warning(disable : 4996)  // getenv
 #endif
+[[nodiscard]] std::string airframe_env_path() {
+    const char* v = std::getenv("SPADE_FC_AIRFRAME");
+    return v != nullptr ? std::string(v) : std::string();
+}
 [[nodiscard]] std::string lockstep_report_env_path() {
     const char* v = std::getenv("SPADE_FC_LOCKSTEP_REPORT");
     return v != nullptr ? std::string(v) : std::string();
@@ -1027,9 +1185,27 @@ TEST(FcRunFolder, TheRealPx4LogCoversTheRunsSimulatedTime) {
     const std::string report((std::istreambuf_iterator<char>(rin)), std::istreambuf_iterator<char>());
     const auto sim = spade::fc::last_time_usec_of(report);
     ASSERT_TRUE(sim.has_value()) << "the report holds no last_time_usec";
-    const Report folder = check_with(log, sim);
+    const std::string airframe_path = airframe_env_path();
+    std::string airframe;
+    if (!airframe_path.empty()) {
+        std::ifstream ain(airframe_path, std::ios::binary);
+        ASSERT_TRUE(ain.good()) << "cannot read the file SPADE_FC_AIRFRAME names";
+        airframe.assign((std::istreambuf_iterator<char>(ain)), std::istreambuf_iterator<char>());
+    }
+    const Report folder = spade::fc::check_run_folder(
+        spade::fc::RunFolder{good_measured(), log, sim, airframe_path.empty() ? std::nullopt : std::optional<std::string>(airframe)});
     const auto* span = span_of(folder);
     ASSERT_NE(span, nullptr);
     std::cout << "K4.span: " << span->detail << "\n";
     EXPECT_EQ(span->verdict, Verdict::pass) << span->detail;
+    const auto* fw = result_of(folder, "K4.firmware");
+    ASSERT_NE(fw, nullptr);
+    std::cout << "K4.firmware: " << fw->detail << "\n";
+    EXPECT_EQ(fw->verdict, Verdict::pass) << fw->detail;
+    const auto* params = result_of(folder, "K4.params");
+    ASSERT_NE(params, nullptr);
+    std::cout << "K4.params: " << static_cast<int>(params->verdict) << " " << params->detail << "\n";
+    if (!airframe_path.empty()) {
+        EXPECT_EQ(params->verdict, Verdict::pass) << params->detail;
+    }
 }

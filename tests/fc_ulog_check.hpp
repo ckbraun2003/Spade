@@ -33,6 +33,7 @@
 // ---------------------------------------------------------------------------
 
 #include <cstdint>
+#include <cstring>
 #include <map>
 #include <set>
 #include <string>
@@ -64,12 +65,31 @@ struct UlogResult {
     uint64_t untimed_messages = 0;   // D messages of a format whose first field is not `uint64_t timestamp`
     std::string untimed_formats;     // those formats, once each
     uint64_t header_start_us = 0;    // the header's u64 (reported, never used as the span's start)
+    // The firmware's identity, from the information messages `I`: `char[N] ver_sw` (the git commit) and `uint32_t ver_sw_release` (PX4's own encoding
+    // 0xMMmmPPtt: major, minor, patch, release type 0xFF for a release; read from the real logs, not from the ULog page).
+    bool has_ver_sw = false;
+    std::string ver_sw;
+    bool has_ver_sw_release = false;
+    uint32_t ver_sw_release = 0;
+    // The parameters, from the parameter messages `P`: `float NAME` and `int32_t NAME` with a 4-byte value (other types are not kept).
+    struct Param {
+        bool is_float = false;
+        int32_t i = 0;
+        float f = 0.0F;
+    };
+    std::map<std::string, Param> params;
 };
 
 namespace ulog_detail {
 
 [[nodiscard]] inline uint16_t rd16(std::string_view b, size_t at) {
     return static_cast<uint16_t>(static_cast<uint8_t>(b[at]) | (static_cast<uint16_t>(static_cast<uint8_t>(b[at + 1])) << 8));
+}
+
+[[nodiscard]] inline uint32_t rd32(std::string_view b, size_t at) {
+    uint32_t v = 0;
+    for (size_t i = 0; i < 4; ++i) v |= static_cast<uint32_t>(static_cast<uint8_t>(b[at + i])) << (8 * i);
+    return v;
 }
 
 [[nodiscard]] inline uint64_t rd64(std::string_view b, size_t at) {
@@ -180,6 +200,29 @@ namespace ulog_detail {
             case 'P':
                 if (size < 1 || m[0] == 0 || static_cast<size_t>(static_cast<uint8_t>(m[0])) + 1 > size)
                     return bad(std::string("an ") + type + " message whose key length is zero or runs past the message", pos);
+                {
+                    const std::string_view key = m.substr(1, static_cast<uint8_t>(m[0]));
+                    const std::string_view val = m.substr(1 + static_cast<uint8_t>(m[0]));
+                    if (type == 'I') {
+                        if (key.substr(0, 5) == "char[" && key.size() > 7 && key.substr(key.size() - 7) == " ver_sw") {
+                            r.has_ver_sw = true;
+                            r.ver_sw = std::string(val);
+                        } else if (key == "uint32_t ver_sw_release" && val.size() == 4) {
+                            r.has_ver_sw_release = true;
+                            r.ver_sw_release = rd32(val, 0);
+                        }
+                    } else if (val.size() == 4 && (key.substr(0, 6) == "float " || key.substr(0, 8) == "int32_t ")) {
+                        UlogResult::Param p;
+                        p.is_float = key[0] == 'f';
+                        if (p.is_float) {
+                            const uint32_t bits = rd32(val, 0);
+                            std::memcpy(&p.f, &bits, 4);
+                        } else {
+                            p.i = static_cast<int32_t>(rd32(val, 0));
+                        }
+                        r.params[std::string(key.substr(key.find(' ') + 1))] = p;
+                    }
+                }
                 break;
             case 'M':
                 if (size < 2 || m[1] == 0 || static_cast<size_t>(static_cast<uint8_t>(m[1])) + 2 > size)
