@@ -258,7 +258,9 @@ TEST(GeoCli, HelpMakesNoRequest) {
     EXPECT_EQ(rig.run({"--help"}), 0);
     EXPECT_TRUE(rig.http.urls.empty());
     CliRig second;
-    EXPECT_EQ(second.run({"--lat", "40.76", "--lon", "-113.90", "--check"}), 3) << "--check on an empty cache is a miss, and also asks no one";
+    std::vector<std::string> check = second.base();  // the rig's cache is an empty temp folder
+    check.push_back("--check");
+    EXPECT_EQ(second.run(check), 3) << "--check on an empty cache is a miss, and also asks no one";
     EXPECT_TRUE(second.http.urls.empty());
 }
 
