@@ -162,6 +162,7 @@ add_executable(spade_tests
     test_sensor_errors.cpp
     test_imu.cpp
     test_camera.cpp
+    test_camera_module.cpp
     test_camera_capacities.cpp
     test_camera_lens.cpp
     test_ray_scene.cpp
@@ -327,6 +328,7 @@ add_executable(spade_tests
     test_fc_link_frames.cpp
     test_fc_link_px4.cpp
     test_fc_link_exchange.cpp
+    test_fc_link_run_support.cpp
     test_fc_link_tcp.cpp
     test_autopilot_map.cpp
     test_x500_contact_model.cpp
@@ -371,6 +373,9 @@ add_executable(spade_tests
     # spade_part_stand_in's boxes (L88l), compiled in from the tool: the stand-in shapes a part with store meshes carries.
     test_part_stand_in.cpp
     ../tools/part_stand_in/stand_in.cpp
+    # spade_camera_frames (O150, video 4), compiled in from the tool: the engine camera's CPU reference frames as PNGs.
+    test_camera_frames_tool.cpp
+    ../tools/camera_frames/camera_frames.cpp
 )
 
 # test_library_install.cpp (L50) installs the `spade_library` component from THIS build tree into a temp prefix and checks it. It needs

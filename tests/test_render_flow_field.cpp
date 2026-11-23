@@ -664,4 +664,26 @@ TEST(RenderFlowField, AnExtrapolationFollowsASearchToTheWallFromTwoFluidReads) {
     expect_map_colour(colour_with(true), 0.5f, "searched then extrapolated to the wall: 0");
 }
 
+// The extrapolation with NO search is the old 2 v(delta) - v(2 delta), unchanged by the search work (O158): on p = 0.8 z with no solid anywhere, the reads at 0.25 and 0.5 are 0.2 and 0.4, the
+// wall's value is exactly 0 and the colour the middle of the map; with no extrapolation the first read's 0.2.
+TEST(RenderFlowField, AnExtrapolationWithNoSearchIsStillTwoReadsMinusTheFarOne) {
+    const spade::FlowVolume volume = spade::test::make_flow_volume(glm::vec3(-2.0f, -2.0f, -1.0f), 0.25f, 16, 16, 8, [](glm::vec3 p) {
+        spade::test::FlowChannels c{};
+        c[spade::kFlowPressure] = 0.8f * p.z;
+        return c;
+    });
+    const auto colour_with = [&](bool extrapolate) {
+        RenderScene scene = quad_scene();
+        FlowSurfaceColouring colouring{&volume, sheet_colours()};
+        colouring.walls_only = true;
+        colouring.offset_cells = 1.0f;
+        colouring.extrapolate = extrapolate;
+        scene.flow_surface_colouring = colouring;
+        scene.statics[0].flow_wall = true;
+        return rgb(draw(scene), 16, 16);
+    };
+    expect_map_colour(colour_with(false), 0.6f, "one read, 0.2");
+    expect_map_colour(colour_with(true), 0.5f, "two reads, 2 (0.2) - 0.4 = 0");
+}
+
 }  // namespace

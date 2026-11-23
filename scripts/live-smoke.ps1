@@ -41,13 +41,21 @@
     is refused (exit 2). A comma list is split, because powershell -File
     passes `-Inject a,b` as one string.
 
+.PARAMETER Only
+    A short run, passed through as --only: the chosen steps (main.sub, comma
+    separated, e.g. editor.x500_feet) and what they need (editor.open for an
+    editor step), in ledger order. A step the ledger lacks is refused (exit
+    2). The run's verdict is over those steps alone; the posters of the other
+    chapters are not written. For a feature film, not for a gate.
+
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\live-smoke.ps1
 #>
 param(
     [string] $OutRoot = (Join-Path (Split-Path -Parent $PSScriptRoot) 'build-smoke'),
     [switch] $NoBuild,
-    [string[]] $Inject = @()
+    [string[]] $Inject = @(),
+    [string] $Only = ''
 )
 $ErrorActionPreference = 'Stop'
 
@@ -96,6 +104,9 @@ if (Test-Path -LiteralPath $journal) {
 $runArgs = @('--live-smoke', '--out', $out, '--label', "$sha $date", '--assets', (Join-Path $repo 'assets'))
 foreach ($spec in ($Inject | ForEach-Object { $_ -split ',' } | Where-Object { $_ })) {
     $runArgs += @('--inject', $spec.Trim())
+}
+if ($Only) {
+    $runArgs += @('--only', $Only.Trim())
 }
 Write-Host "live-smoke: $exe $($runArgs -join ' ')"
 # A native command's stderr must not stop this script: the sandbox explains

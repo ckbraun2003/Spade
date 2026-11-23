@@ -19,11 +19,14 @@
 // a log this checker does not have yet: never a pass either). ok() is "no fail and no absent"; complete() is also "nothing unchecked",
 // which is what a release will ask once Core's trace format and PX4's log are readable.
 //
-// The checks that depend on them are reported `unchecked` with their reason, so one cannot go quiet unnoticed:
-//   K3.trace_hash  recomputing the rolling hash from trace.bin (the hash and the record layout are not pinned)
-//   K4.log         the autopilot log past its header: parse, time span, firmware version, parameter hash
-//   K6.recount     the overrun recount from per-tick costs
-//   K11.replay     fc_host --replay reproducing the trace
+// Core's trace.bin v1 and commands.bin v1 are pinned (plan section 4.1), so these are CHECKED, from the bytes alone:
+//   K3.trace_hash  the layout, the SHA-256 trailer, the rolling hash recomputed tick by tick, and run.yaml's trace_hash and trace_ticks
+//   K11.commands   commands.bin well formed, and consistent with the trace's applied rotor command at every tick
+// The checks that need what the record does not hold are reported `unchecked` with their reason, so one cannot go quiet unnoticed:
+//   K4.log         the autopilot log past its header: time span, firmware version, parameter hash (its FRAMING is checked when a log is given:
+//                  fc_ulog_check.hpp, "well-formed"; with no log given it stays unchecked)
+//   K6.recount     the overrun recount: it needs per-tick costs, and the record has none (measured mode; costs.yaml is phase 2)
+//   K11.replay     a replay: it needs the world, which the folder holds only by its hash
 // ---------------------------------------------------------------------------
 
 #include <algorithm>
@@ -35,12 +38,15 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
+#include "fc_ulog_check.hpp"
 #include "world/sha256.hpp"
 
 namespace spade::fc {
@@ -80,8 +86,15 @@ struct Report {
     }
 };
 
+// The record's own files (the six Core's writer leaves, plus costs.yaml in budget mode), and OPTIONALLY the autopilot's log, which lives BESIDE the
+// record (the live test's px4-log/<date>/<time>.ulg), not in it: a .ulg among `files` is an unlisted file, K2's. With a log, K4.log is read from it.
 struct RunFolder {
     Files files;
+    std::optional<std::string> autopilot_log;
+
+    // Constructors, not aggregate initialisation: gcc's -Werror=missing-field-initializers refuses `RunFolder{files}` with the log left out.
+    RunFolder() = default;
+    RunFolder(Files f, std::optional<std::string> log = std::nullopt) : files(std::move(f)), autopilot_log(std::move(log)) {}
 };
 
 // ----- a small reader for the flat YAML the record uses -----------------------------------------------------------------------------
@@ -223,6 +236,197 @@ inline CheckResult check_ulog_header(std::string_view bytes) {
     return r;
 }
 
+// ----- trace.bin v1 and commands.bin v1, read from the bytes ------------------------------------------------------------------------
+//
+// The layout is Core's, pinned in docs/design/core/plans/2026-11-21-fc-core.md section 4.1 and in the comment of tools/fc_host/lockstep.hpp;
+// this is a SECOND reader of it, written from the spec and including nothing of Core's (TD-4). Little-endian.
+//   trace.bin    header 192 bytes ("SPTR", version 1, header size, flags, dt_ns, substeps, rotor count n, tick count, first tick, tick record size
+//                76 + 12 n, sample header size 16, tick section offset, sample section offset, sample count, four sample payload sizes at 80,
+//                trace_hash as 64 hex characters at 96), the tick records, the sample records ({kind, binding, index, 0} then the payload), and a
+//                trailer of 64 hex characters: the SHA-256 of every byte before it.
+//   trace_hash   h0 = sha256_hex("spade.trace.v1"); h_k = sha256_hex(h_(k-1) + tick record k + that tick's sample records); the last h.
+//   commands.bin "SPCM", version 1, n, 0, count, then count records of {u64 tick, f32[n]}.
+
+namespace detail {
+
+inline uint32_t rd32(std::string_view b, size_t o) {
+    uint32_t v = 0;
+    for (size_t i = 0; i < 4; ++i) v |= static_cast<uint32_t>(static_cast<unsigned char>(b[o + i])) << (8 * i);
+    return v;
+}
+
+inline uint64_t rd64(std::string_view b, size_t o) {
+    uint64_t v = 0;
+    for (size_t i = 0; i < 8; ++i) v |= static_cast<uint64_t>(static_cast<unsigned char>(b[o + i])) << (8 * i);
+    return v;
+}
+
+struct TraceInfo {
+    std::string error;                 // non-empty: the layout could not be read, so nothing below is meaningful
+    std::vector<std::string> problems; // things that disagree although the layout could be walked to the end
+    uint32_t rotors = 0;
+    uint64_t ticks = 0;
+    uint64_t first_tick = 0;
+    size_t tick_off = 0;
+    size_t tick_bytes = 0;
+    std::string header_hash;           // the header's trace_hash
+    std::string computed_hash;         // the rolling hash recomputed from the records
+};
+
+inline TraceInfo parse_trace(std::string_view t) {
+    TraceInfo in;
+    constexpr size_t kHeader = 192;
+    constexpr size_t kTrailer = 64;
+    constexpr size_t kSampleHeader = 16;
+    std::set<std::string> seen;
+    auto bad = [&](const std::string& why) {
+        if (seen.insert(why).second) in.problems.push_back(why);
+    };
+    auto fatal = [&](const std::string& why) {
+        in.error = why;
+        return in;
+    };
+    if (t.size() < kHeader + kTrailer) return fatal("trace.bin is shorter than a header and a trailer (" + std::to_string(t.size()) + " bytes)");
+    if (t.substr(0, 4) != "SPTR") return fatal("trace.bin does not open with SPTR");
+    if (rd32(t, 4) != 1) return fatal("trace.bin is version " + std::to_string(rd32(t, 4)) + ", not 1");
+    if (rd32(t, 8) != kHeader) return fatal("the header size is " + std::to_string(rd32(t, 8)) + ", not 192");
+    if (rd32(t, 12) != 0) bad("the header's flags are not 0");
+    const uint64_t dt_ns = rd64(t, 16);
+    in.rotors = rd32(t, 28);
+    in.ticks = rd64(t, 32);
+    in.first_tick = rd64(t, 40);
+    in.tick_bytes = rd32(t, 48);
+    if (dt_ns == 0) return fatal("dt_ns is 0");
+    if (in.rotors == 0 || in.rotors > 64) return fatal("the rotor count is " + std::to_string(in.rotors));
+    if (in.tick_bytes != 76 + 12 * static_cast<size_t>(in.rotors))
+        return fatal("the tick record size is " + std::to_string(in.tick_bytes) + ", not 76 + 12 x the rotor count");
+    if (rd32(t, 52) != kSampleHeader) return fatal("the sample header size is not 16");
+    const uint64_t tick_off = rd64(t, 56);
+    const uint64_t sample_off = rd64(t, 64);
+    const uint64_t samples = rd64(t, 72);
+    const uint64_t body = t.size() - kTrailer;  // the end of the last sample record
+    if (tick_off != kHeader) return fatal("the tick section does not start at byte 192");
+    if (in.ticks > body / in.tick_bytes) return fatal("the tick count (" + std::to_string(in.ticks) + ") does not fit the file");
+    if (sample_off != tick_off + in.ticks * in.tick_bytes) return fatal("the sample section does not start where the tick records end");
+    if (sample_off > body) return fatal("the sample section starts past the end of the file");
+    if (samples > (body - sample_off) / kSampleHeader) return fatal("the sample count (" + std::to_string(samples) + ") does not fit the file");
+    uint32_t payload[4];
+    for (size_t i = 0; i < 4; ++i) {
+        payload[i] = rd32(t, 80 + 4 * i);
+        if (payload[i] == 0 || payload[i] > 48) return fatal("a sample payload size in the header is " + std::to_string(payload[i]));
+    }
+    in.tick_off = static_cast<size_t>(tick_off);
+    in.header_hash = std::string(t.substr(96, 64));
+    if (!is_hex64(in.header_hash)) bad("the header's trace_hash is not 64 lower-case hex digits");
+
+    // The trailer: the SHA-256 of every byte before it.
+    if (spade::sha256_hex(t.substr(0, body)) != t.substr(body)) bad("the trailer is not the SHA-256 of the bytes before it");
+
+    // The sample records, walked: where each starts, and the section ends exactly where the trailer starts.
+    std::vector<size_t> at;
+    at.reserve(static_cast<size_t>(samples) + 1);
+    size_t pos = static_cast<size_t>(sample_off);
+    for (uint64_t i = 0; i < samples; ++i) {
+        if (pos + kSampleHeader > body) return fatal("sample record " + std::to_string(i) + " runs past the end of the file");
+        const uint32_t kind = rd32(t, pos);
+        const int slot = kind == 1 ? 0 : kind == 2 ? 1 : kind == 4 ? 2 : kind == 5 ? 3 : -1;
+        if (slot < 0) return fatal("sample record " + std::to_string(i) + " has kind " + std::to_string(kind) + " (1, 2, 4 and 5 are known)");
+        if (rd32(t, pos + 12) != 0) bad("a sample record's last header word is not 0");
+        const size_t size = kSampleHeader + payload[slot];
+        if (pos + size > body) return fatal("sample record " + std::to_string(i) + " runs past the end of the file");
+        at.push_back(pos);
+        pos += size;
+    }
+    at.push_back(pos);
+    if (pos != body) return fatal("the sample records end at byte " + std::to_string(pos) + " but the trailer starts at " + std::to_string(body));
+
+    // The ticks: numbered in order, timed by dt_ns, each pointing at its own run of samples; the rolling hash over all of it.
+    std::string h = spade::sha256_hex("spade.trace.v1");
+    uint64_t next = 0;
+    const size_t n = in.rotors;
+    for (uint64_t k = 0; k < in.ticks; ++k) {
+        const size_t off = in.tick_off + static_cast<size_t>(k) * in.tick_bytes;
+        const uint64_t tick = rd64(t, off);
+        if (tick != in.first_tick + k) bad("a tick record is not numbered first_tick + its position");
+        if (rd64(t, off + 8) != (tick + 1) * dt_ns) bad("a tick record's time is not (tick + 1) x dt_ns");
+        const uint64_t first = rd32(t, off + 68 + 4 * n);
+        const uint64_t count = rd32(t, off + 72 + 4 * n);
+        if (first != next || first + count > samples)
+            return fatal("tick " + std::to_string(k) + " does not point at the next run of sample records");
+        next += count;
+        h = spade::sha256_hex(h + std::string(t.substr(off, in.tick_bytes)) +
+                              std::string(t.substr(at[static_cast<size_t>(first)], at[static_cast<size_t>(first + count)] - at[static_cast<size_t>(first)])));
+    }
+    if (next != samples) bad("the tick records account for " + std::to_string(next) + " of " + std::to_string(samples) + " sample records");
+    in.computed_hash = h;
+    return in;
+}
+
+// K3.trace_hash: the layout, the trailer, the rolling hash, and the hash and tick count run.yaml carries.
+inline CheckResult check_trace_hash(const TraceInfo& in, const std::map<std::string, std::string>& run) {
+    CheckResult r{"K3.trace_hash", Verdict::pass, {}};
+    std::string bad = in.error;
+    auto note = [&](const std::string& s) { bad += (bad.empty() ? "" : "; ") + s; };
+    if (bad.empty()) {
+        for (const std::string& p : in.problems) note(p);
+        if (in.computed_hash != in.header_hash) note("the rolling hash recomputed from the records is not the header's trace_hash");
+        if (run.count("trace_hash") != 0 && run.at("trace_hash") != in.computed_hash) note("run.yaml's trace_hash is not the recomputed rolling hash");
+        uint64_t ticks = 0;
+        if (run.count("trace_ticks") != 0 && parse_uint(run.at("trace_ticks"), &ticks) && ticks != in.ticks)
+            note("run.yaml's trace_ticks (" + std::to_string(ticks) + ") is not the trace's tick count (" + std::to_string(in.ticks) + ")");
+    }
+    if (!bad.empty()) {
+        r.verdict = Verdict::fail;
+        r.detail = bad;
+    }
+    return r;
+}
+
+// K11.commands: commands.bin is well formed, its ticks lie inside the trace, and at every tick the rotor command the trace applied is the last
+// command at or before that tick. This is the replay's INPUT checked; it is not a replay.
+inline CheckResult check_commands(const TraceInfo& in, std::string_view trace, std::string_view c) {
+    CheckResult r{"K11.commands", Verdict::pass, {}};
+    auto fail = [&](const std::string& why) {
+        r.verdict = Verdict::fail;
+        r.detail = why;
+        return r;
+    };
+    if (!in.error.empty()) {
+        r.verdict = Verdict::unchecked;
+        r.detail = "commands.bin is read against the trace, and trace.bin could not be read";
+        return r;
+    }
+    constexpr size_t kHeader = 24;
+    if (c.size() < kHeader) return fail("commands.bin is shorter than its 24-byte header (" + std::to_string(c.size()) + " bytes)");
+    if (c.substr(0, 4) != "SPCM") return fail("commands.bin does not open with SPCM");
+    if (rd32(c, 4) != 1) return fail("commands.bin is version " + std::to_string(rd32(c, 4)) + ", not 1");
+    if (rd32(c, 8) != in.rotors)
+        return fail("commands.bin has " + std::to_string(rd32(c, 8)) + " rotors, the trace " + std::to_string(in.rotors));
+    if (rd32(c, 12) != 0) return fail("commands.bin's reserved word is not 0");
+    const size_t n = in.rotors;
+    const size_t rec = 8 + 4 * n;
+    const uint64_t count = rd64(c, 16);
+    if (count > (c.size() - kHeader) / rec || c.size() != kHeader + static_cast<size_t>(count) * rec)
+        return fail("commands.bin's size (" + std::to_string(c.size()) + " bytes) is not 24 + its count (" + std::to_string(count) + ") x " + std::to_string(rec));
+    for (uint64_t i = 0; i < count; ++i) {
+        const uint64_t tick = rd64(c, kHeader + static_cast<size_t>(i) * rec);
+        if (i > 0 && tick <= rd64(c, kHeader + static_cast<size_t>(i - 1) * rec)) return fail("commands.bin's ticks do not strictly increase (record " + std::to_string(i) + ")");
+        if (tick < in.first_tick || tick >= in.first_tick + in.ticks) return fail("commands.bin names tick " + std::to_string(tick) + ", outside the trace");
+    }
+    size_t j = 0;
+    for (uint64_t k = 0; k < in.ticks && count > 0; ++k) {
+        const uint64_t tick = in.first_tick + k;
+        if (rd64(c, kHeader) > tick) continue;  // before the first command: the trace's command is what the rotors started with
+        while (j + 1 < count && rd64(c, kHeader + (j + 1) * rec) <= tick) ++j;
+        const size_t applied = in.tick_off + static_cast<size_t>(k) * in.tick_bytes + 68;
+        if (trace.substr(applied, 4 * n) != c.substr(kHeader + j * rec + 8, 4 * n))
+            return fail("at tick " + std::to_string(tick) + " the trace's applied rotor command is not the last command in commands.bin");
+    }
+    return r;
+}
+
+}  // namespace detail
+
 // ----- the folder check -------------------------------------------------------------------------------------------------------------
 
 inline Report check_run_folder(const RunFolder& folder) {
@@ -304,8 +508,20 @@ inline Report check_run_folder(const RunFolder& folder) {
     } else {
         add("K3", Verdict::absent, "run.yaml is missing");
     }
-    add("K3.trace_hash", Verdict::unchecked, "the trace record layout and the rolling hash are not pinned (Core)");
-    add("K4.log", Verdict::unchecked, "the autopilot log is opaque to the record; its parse, span, firmware and parameter hash come with the PX4 run");
+    detail::TraceInfo trace_info;
+    if (has("trace.bin")) {
+        trace_info = detail::parse_trace(files.at("trace.bin"));
+        rep.results.push_back(detail::check_trace_hash(trace_info, run));
+    } else {
+        trace_info.error = "trace.bin is missing";
+        add("K3.trace_hash", Verdict::absent, "trace.bin is missing");
+    }
+    if (folder.autopilot_log.has_value()) {
+        const UlogResult u = read_ulog(*folder.autopilot_log);
+        add("K4.log", u.kind == UlogResult::Kind::well_formed ? Verdict::pass : (u.kind == UlogResult::Kind::unread ? Verdict::unchecked : Verdict::fail), u.detail);
+    } else {
+        add("K4.log", Verdict::unchecked, "no autopilot log was given to the checker (it lives beside the record, not in it)");
+    }
 
     // K5: the copies match their hashes; the mode is one of two; a measured run names its box and tree.
     if (has("run.yaml")) {
@@ -365,7 +581,8 @@ inline Report check_run_folder(const RunFolder& folder) {
     } else {
         add("K6", Verdict::absent, "meters.yaml is missing");
     }
-    add("K6.recount", Verdict::unchecked, "the per-tick costs a recount needs are not in the record yet (Core)");
+    add("K6.recount", Verdict::unchecked,
+        "a recount needs per-tick costs, and the record has none: the host measures nothing (the meters are the runner's) and budget mode's costs.yaml is phase 2");
 
     // K7: the package hash is a hash.
     if (has("run.yaml")) {
@@ -414,7 +631,15 @@ inline Report check_run_folder(const RunFolder& folder) {
             add("K10", Verdict::fail, "a user folder path is in: " + bad);
     }
 
-    add("K11.replay", Verdict::unchecked, "fc_host --replay is Core's and not built yet");
+    // A replay is not made here: it needs the world, which the folder holds only by its hash (world_file_hash), and fc_host has replay_commands
+    // as a library call and no --replay program. What is checked is the replay's input: the commands, well formed and consistent with the trace.
+    add("K11.replay", Verdict::unchecked,
+        "a replay needs the world, which the folder holds only by its hash; fc_host has replay_commands as a library call and no --replay program");
+    if (has("commands.bin"))
+        rep.results.push_back(detail::check_commands(trace_info, has("trace.bin") ? std::string_view(files.at("trace.bin")) : std::string_view(),
+                                                     files.at("commands.bin")));
+    else
+        add("K11.commands", Verdict::absent, "commands.bin is missing");
     return rep;
 }
 

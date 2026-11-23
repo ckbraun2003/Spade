@@ -25,6 +25,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <functional>
+#include <algorithm>
 #include <span>
 #include <string>
 #include <string_view>
@@ -219,6 +220,104 @@ class Smoke {
 // could cancel a real anomaly and turn a FAIL into a PASS; expiry is covered
 // by tests/test_sandbox_live_smoke.cpp.
 // ---------------------------------------------------------------------------
+// --only: a short run of chosen steps (a feature film runs one step, not the whole tour). `a.b,c.d`: each a declared step, main.sub.
+[[nodiscard]] inline Result<std::vector<std::string>> parse_only(std::string_view list) {
+    const auto refuse = [&]() -> Result<std::vector<std::string>> {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     "--only takes steps as main.sub, comma separated (editor.x500_feet), not '" + std::string(list) + "'"});
+    };
+    std::vector<std::string> out;
+    std::size_t at = 0;
+    while (at <= list.size()) {
+        const std::size_t comma = list.find(',', at);
+        const std::string_view item = list.substr(at, comma == std::string_view::npos ? std::string_view::npos : comma - at);
+        const std::size_t dot = item.find('.');
+        if (item.empty() || dot == std::string_view::npos || dot == 0 || dot + 1 >= item.size()) return refuse();
+        out.emplace_back(item);
+        if (comma == std::string_view::npos) break;
+        at = comma + 1;
+    }
+    return out;
+}
+
+// A step named that the ledger does not declare would run nothing: refused before anything is touched.
+[[nodiscard]] inline Result<void> validate_only(std::span<const std::string> only, std::span<const std::string> declared) {
+    for (const std::string& name : only) {
+        if (std::find(declared.begin(), declared.end(), name) != declared.end()) continue;
+        std::string list;
+        for (const std::string& d : declared) list += (list.empty() ? "" : ", ") + d;
+        return std::unexpected(Error{Code::invalid_argument,
+                                     "--only " + name + " names no declared step (the steps are " + list + ")"});
+    }
+    return {};
+}
+
+// The steps a run runs, in ledger order: all of them without --only; with it the chosen ones, and editor.open when any is an editor step (each
+// of those begins by needing the editor open).
+[[nodiscard]] inline std::vector<std::string> steps_to_run(std::span<const std::string> only, std::span<const std::string> declared) {
+    if (only.empty()) return std::vector<std::string>(declared.begin(), declared.end());
+    bool editor = false;
+    for (const std::string& name : only) editor = editor || name.rfind("editor.", 0) == 0;
+    std::vector<std::string> out;
+    for (const std::string& d : declared) {
+        const bool chosen = std::find(only.begin(), only.end(), d) != only.end();
+        if (chosen || (editor && d == "editor.open")) out.push_back(d);
+    }
+    return out;
+}
+
+// What a run owes at the end, under --only (the first verification run of editor.x500_feet failed the whole-tour file checks for the posters and
+// stills of steps it had not run).
+// A chapter's poster is owed when the run runs a step of that chapter.
+[[nodiscard]] inline bool poster_expected(std::span<const std::string> run_steps, std::string_view main) {
+    for (const std::string& step : run_steps) {
+        if (step.size() > main.size() && step.compare(0, main.size(), main) == 0 && step[main.size()] == '.') return true;
+    }
+    return false;
+}
+// A still that was not written is a failure in a whole-tour run; under --only it is a note (which step writes which still is not in the ledger).
+[[nodiscard]] inline bool missing_still_is_anomaly(std::span<const std::string> only) { return only.empty(); }
+
+// Whether text that is drawn on screen names a path on this machine (a drive path, a user folder). A feature video carries none: the
+// editor_x500_feet still showed the Load from file field with C:\Users\... in it. A drive path (a letter, a colon, a slash) or a user folder.
+[[nodiscard]] inline bool shows_a_path(std::string_view text) {
+    for (std::size_t i = 0; i + 2 < text.size(); ++i) {
+        const char c = text[i];
+        const bool letter = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+        if (letter && text[i + 1] == ':' && (text[i + 2] == '\\' || text[i + 2] == '/')) return true;
+    }
+    for (const std::string_view folder : {std::string_view("\\Users\\"), std::string_view("/Users/"), std::string_view("/home/")}) {
+        if (text.find(folder) != std::string_view::npos) return true;
+    }
+    return false;
+}
+
+// The harness reads every text the editor can draw (the Load field, the status line, the title, the path fields) at the end of EVERY step and before
+// EVERY still, not just in the steps someone thought of: a feature video carries no path on this machine. An offence names the step and the field, never
+// the text (the journal is not a place for the path either).
+struct ScreenText {
+    std::string field;
+    std::string value;
+};
+class PathWatch {
+  public:
+    void read(std::string_view where, std::span<const ScreenText> texts) {
+        ++reads_;
+        for (const ScreenText& text : texts) {
+            ++texts_read_;
+            if (shows_a_path(text.value)) offences_.push_back(std::string(where) + ": " + text.field);
+        }
+    }
+    [[nodiscard]] std::size_t reads() const noexcept { return reads_; }
+    [[nodiscard]] std::size_t texts_read() const noexcept { return texts_read_; }
+    [[nodiscard]] const std::vector<std::string>& offences() const noexcept { return offences_; }
+
+  private:
+    std::size_t reads_ = 0;
+    std::size_t texts_read_ = 0;
+    std::vector<std::string> offences_;
+};
+
 struct Injection {
     enum class Kind { skip, anomaly };
     Kind kind = Kind::skip;

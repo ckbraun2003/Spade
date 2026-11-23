@@ -200,7 +200,7 @@ scripts/gcc-check.sh --compile tests/test_example.cpp engine/render/example.cpp
 
   - **A path pitfall:** from Git Bash, write `C:/Users/...`, never `/c/Users/...`. Python takes an MSYS path literally.
     - History: before v2, a relative executable after `--` resolved against jobrun's own working directory, not `--cwd`, and failed with WinError 2 only after the whole queue wait (Physics, 2026-10-20). v2 resolves `argv[0]` against `--cwd`, or refuses at once.
-  - **Its limits:** `--limit-s` counts from the job's start. Exit 125 means the job gave up waiting for its turn (`--wait-max-s`, by default 3600 s).
+  - **Its limits:** `--limit-s` counts from the job's start. Exit 125 means the job gave up waiting for its turn (`--wait-max-s`, by default 7200 s since Vantage 4608b800; it was 3600 s).
   - **From a session's tool call:** run a short job in the foreground with `--wait-max-s 300`. Run a leg or a long suite in the background, with a `--log`. If the reaper kills a background call, run it again; never detach it.
   - **Exempt:** `scripts/gcc-check.sh --compile`, reads, `git merge` and `git commit`, and `git add` with explicit paths.
   - **A wrong block** goes to the lead, with the exact command.

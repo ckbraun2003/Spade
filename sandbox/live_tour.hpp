@@ -28,6 +28,7 @@ struct TourOptions {
     std::filesystem::path out_dir;      // created if missing; only the run's own files are swept
     std::string label;                  // the commit and the date, for the title cards
     std::vector<Injection> injections;  // red runs only (--inject)
+    std::vector<std::string> only;      // a short run: just these steps and what they need (--only); empty = the whole tour
     uint32_t width = 1280;
     uint32_t height = 720;
     float blur = 0.0f;

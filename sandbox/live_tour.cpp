@@ -6,6 +6,7 @@
 // The video takes every second frame at 30 fps, so it plays in real time.
 
 #include "live_tour.hpp"
+#include "live_ledger.hpp"
 
 #include <algorithm>
 #include <array>
@@ -88,48 +89,7 @@ constexpr int kOpeningFrames = 90;   // paced: 3 s
 constexpr int kClosingFrames = 120;  // paced: 4 s
 constexpr int kChapterCardFrames = 60;  // paced: 2 s
 
-// THE LEDGER. Every sub-step the tour runs, in order. A step listed here that
-// never runs fails the run; a step the tour runs that is not listed is an
-// anomaly.
-struct StepName {
-    std::string_view main;
-    std::string_view sub;
-};
-// Five chapters (INT-9, the storyboard plans/2026-10-13-live-tour-storyboard.md; refurbished 2026-11-13, the audit):
-// the engine, the airflow, the editor, the bodies, and what is new in this batch.
-constexpr std::array kSteps = {
-    // Chapter 1, the engine (the audit, 2026-11-13): the drone box in three steps, what it proves and no more.
-    StepName{"drone_box", "open"},       StepName{"drone_box", "attitude"},
-    StepName{"drone_box", "backend"},
-    StepName{"airflow", "live"},
-    StepName{"editor", "open"},          StepName{"editor", "picker"},
-    StepName{"editor", "select"},        StepName{"editor", "place"},
-    StepName{"editor", "move"},          StepName{"editor", "inspect"},
-    StepName{"editor", "undo"},          StepName{"editor", "run"},
-    StepName{"editor", "world"},         StepName{"editor", "conflict"},
-    StepName{"editor", "views"},         StepName{"editor", "save"},
-    StepName{"editor", "library"},       StepName{"editor", "add_drone"},
-    StepName{"editor", "airflow"},       StepName{"editor", "add_objects"},
-    StepName{"editor", "fly"},           StepName{"editor", "wind"},
-    // Chapter 4, the bodies: L68's contact tumbling, four shapes in a row.
-    StepName{"bodies", "row"},
-    // Chapter 5, "new in this batch" (L64): its steps are THIS batch's, replaced at the next one.
-    StepName{"batch", "shapes"},
-};
-
-// The extra stills a run writes beside the posters (Tour::snapshot), declared
-// so that a later run into the same folder owns them.
-constexpr std::array<std::string_view, 21> kSnapshots = {"editor_picker",   "editor_vehicle",  "editor_place",
-                                                         "editor_gizmo",    "editor_inspect",  "editor_running",
-                                                         "editor_world",    "editor_conflict", "editor_objects",
-                                                         "editor_part",     "editor_drone",    "editor_placed_drone",
-                                                         "editor_airflow",  "editor_fly_props",
-                                                         // The user guide's stills (L73a item 10; the lead,
-                                                         // 2026-11-11): written clean, with no caption bar and no
-                                                         // title card, at steps the tour already has.
-                                                         "drone_box_hud",   "editor_undo",     "editor_views",
-                                                         "editor_save",     "editor_air_running", "editor_subgrid",
-                                                         "editor_wind"};
+// THE LEDGER (kSteps, kSnapshots) lives in live_ledger.hpp, so a test can read it.
 
 // The main functions, in tour order. Each has one poster, numbered by its
 // place here, so a poster's name never depends on which steps ran.
@@ -368,6 +328,9 @@ class Tour {
   public:
     Tour(const TourOptions& options, GlTargetSink& sink, Smoke& smoke, Recorder& recorder)
         : options_(options), sink_(sink), smoke_(smoke), rec_(recorder) {
+        std::vector<std::string> all_steps;
+        for (const StepName& st : kSteps) all_steps.push_back(std::string(st.main) + "." + std::string(st.sub));
+        run_steps_ = steps_to_run(options.only, all_steps);  // --only: the steps this run runs
         for (const Injection& inj : options.injections) {
             if (inj.kind == Injection::Kind::skip) {
                 skip_.push_back(inj.target);
@@ -382,6 +345,9 @@ class Tour {
         if (stopped_) {
             return;
         }
+        if (std::find(run_steps_.begin(), run_steps_.end(), name) == run_steps_.end()) {
+            return;  // --only: not part of this run, and not declared for it either
+        }
         if (std::find(skip_.begin(), skip_.end(), name) != skip_.end()) {
             smoke_.note("skipped by --inject: " + name);
             return;
@@ -389,8 +355,9 @@ class Tour {
         ++index_;
         smoke_.begin(name);
         sink_.set_caption(std::string(main) + "  -  " + std::string(sub) + "    (" + std::to_string(index_) + "/" +
-                          std::to_string(kSteps.size()) + ")");
+                          std::to_string(run_steps_.size()) + ")");
         body();
+        watch_screen(name);
         if (!stopped_) {
             smoke_.done();
         }
@@ -448,8 +415,13 @@ class Tour {
             smoke_.anomaly("harness/snapshot-undeclared", name);
             return;
         }
+        watch_screen("still " + std::string(name));
         rec_.want_still(options_.out_dir / (std::string(name) + ".png"));
     }
+    // The texts the editor draws, read by the harness at the end of every step and before every still (PathWatch): a feature video carries no path on
+    // this machine. Set while an editor session lives, empty otherwise.
+    void set_screen_texts(std::function<std::vector<ScreenText>()> texts) { screen_texts_ = std::move(texts); }
+    [[nodiscard]] const PathWatch& path_watch() const noexcept { return watch_; }
     [[nodiscard]] const fs::path& out_dir() const noexcept { return options_.out_dir; }
 
     [[nodiscard]] bool stopped() const noexcept { return stopped_; }
@@ -459,11 +431,25 @@ class Tour {
     [[nodiscard]] Recorder& recorder() noexcept { return rec_; }
 
   private:
+    // One read of the screen texts; each path found is a failed check naming the step and the field, never the text.
+    void watch_screen(std::string_view where) {
+        if (!screen_texts_) return;
+        const std::vector<ScreenText> texts = screen_texts_();
+        const std::size_t before = watch_.offences().size();
+        watch_.read(where, texts);
+        for (std::size_t i = before; i < watch_.offences().size(); ++i) {
+            (void)smoke_.check(false, "path-on-screen", watch_.offences()[i]);
+        }
+    }
+
     const TourOptions& options_;
     GlTargetSink& sink_;
     Smoke& smoke_;
     Recorder& rec_;
     std::vector<std::string> skip_;
+    std::vector<std::string> run_steps_;
+    PathWatch watch_;
+    std::function<std::vector<ScreenText>()> screen_texts_;
     bool stopped_ = false;
     uint64_t frame_ = 0;
     uint32_t index_ = 0;
@@ -665,6 +651,17 @@ private:
 void editor_tour(Tour& t, const fs::path& assets) {
     Smoke& s = t.smoke();
     std::unique_ptr<EditorSession> session;
+    t.set_screen_texts([&session]() -> std::vector<ScreenText> {
+        if (!session) return {};
+        const editor::EditorPanels& p = session->workspace().panels();
+        return {{"item_path", p.item_path}, {"status", p.status},       {"title", p.title},           {"path", p.path},
+                {"selected_source", p.selected_source}, {"view_note", p.view_note}, {"close_prompt", p.close_prompt}};
+    });
+    // The lambda above reads `session`, which ends with this function: the harness must not call it afterwards.
+    struct ClearScreenTexts {
+        Tour& tour;
+        ~ClearScreenTexts() { tour.set_screen_texts(nullptr); }
+    } clear_screen_texts{t};
     const DrawFn draw = [&session, &t](const FrameInput& in) { return session->frame(in, t.sink().delta_seconds()); };
     const auto idle = InputFn{};
     const auto open = [&]() -> bool { return s.check(session != nullptr, "open", "the editor is open"); };
@@ -1388,6 +1385,158 @@ void editor_tour(Tour& t, const fs::path& assets) {
         then(10);
     });
 
+    // Video #2 (O150): the X500 on its feet. Physics' x500_contact.model.yaml (the airframe on its twelve foot points) is loaded the way a user loads
+    // it (Load from file, from a copy in this run's work folder: assets/ gains nothing), placed by the editor at its rest height, then lifted 0.10 m through
+    // the inspector's start position, dropped (Run) and watched until it is still. The same drop is replayed at 0.25x, labelled so. What is checked, in mm and
+    // s: the gap between its lowest foot point and the floor, at placement, lifted and settled; the time to stillness. What the contact does (bounce or damp) is
+    // shown as it is; the foot springs are Physics' tuned values.
+    t.step("editor", "x500_feet", [&] {
+        if (!open()) return;
+        std::error_code ec;
+        const fs::path model_file = work / "x500_contact.model.yaml";
+        fs::copy_file(assets.parent_path() / "tools" / "flow_movie" / "data" / "x500" / "x500_contact.model.yaml", model_file,
+                      fs::copy_options::overwrite_existing, ec);
+        if (!s.check(!ec, "copy", ec ? ec.message() : "x500_contact.model.yaml copied into the work copy")) return;
+        w().panels().item_path = model_file.string();
+        command(editor::Command::load_item);
+        if (!s.check(!w().panels().library.empty() && w().panels().library.back().name == "x500_contact", "loaded",
+                     w().panels().status.empty() ? "x500_contact, armed" : w().panels().status)) {
+            return;
+        }
+        // The Load from file field shows what it read, a path on this machine, in the still and the film. The model is loaded: the field is emptied
+        // so nothing on screen names a user folder (a feature video carries none).
+        w().panels().item_path.clear();
+        if (!s.check(!shows_a_path(w().panels().item_path) && !shows_a_path(w().panels().status), "path-off-screen",
+                     "the Load from file field emptied after the load; no path in it or in the status line")) {
+            return;
+        }
+        const std::size_t before = scene_now().vehicles.size();
+        const glm::vec3 home = scene_now().vehicles.at(0).start.pos;
+        const glm::vec3 target(home.x, 0.0f, home.z - 1.5f);  // clear of the boxes at x +-1, opposite the Phantom's place
+        click_towards(target);
+        if (!s.check(scene_now().vehicles.size() == before + 1, "placed", w().panels().status)) return;
+        const scene::SceneVehicle placed = scene_now().vehicles.back();
+        const std::string x500 = placed.name;
+        const vehicles::ModelType* model = model_of(x500);
+        if (!s.check(model != nullptr, "model", placed.model)) return;
+
+        // The gap between its lowest foot point and the floor beneath it, for a design-frame position (level), by the scene's SDF.
+        const auto foot_gap = [&](glm::vec3 pos) -> std::optional<float> {
+            const BodyState body = body_at(*model, pos, glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+            const std::optional<float> low = physics::lowest_contact_point(*model, body);
+            const glm::vec3 above(pos.x, pos.y + 5.0f, pos.z);
+            const std::optional<float> down =
+                editor::detail::march(w().composed().world.sdf, above, glm::vec3(0.0f, -1.0f, 0.0f));
+            if (!low || !down) return std::nullopt;
+            return *low - (above.y - *down);
+        };
+        const std::optional<float> at_rest = foot_gap(placed.start.pos);
+        const float rest_gap = at_rest.value_or(std::numeric_limits<float>::quiet_NaN());  // NaN: no floor beneath, and every comparison below is false
+        s.check(rest_gap >= end_goal::kRestLo && rest_gap <= end_goal::kRestHi, "placed-at-rest",
+                at_rest.has_value() ? "lowest foot point " + fmt(rest_gap * 1000.0f) + " mm above the floor (within [-2, +5]); origin " +
+                                          fmt(placed.start.pos.y * 1000.0f) + " mm up"
+                                    : "no floor beneath");
+
+        // The camera on the drone, as the airflow chapter frames its poster; put back after.
+        const OrbitCamera cam_before = session->camera();
+        session->camera().target = placed.start.pos;
+        session->camera().yaw = 0.6f;
+        session->camera().pitch = 0.25f;
+        w().panels().selection = editor::Selection{editor::Selection::Kind::object, x500};
+        then(40);  // the viewer sees it standing
+
+        // The user's lift, through the inspector: 0.10 m up, in the start pose.
+        constexpr float kLift = 0.10f;
+        auto lifted = placed.start;
+        lifted.pos.y += kLift;
+        w().panels().pending.push_back(editor::SetVehicleStart{x500, lifted});
+        w().apply_panels();
+        then(30);
+        const std::optional<float> up = foot_gap(scene_now().vehicles.back().start.pos);
+        const float lifted_gap = up.value_or(std::numeric_limits<float>::quiet_NaN());
+        s.check(std::abs((lifted_gap - rest_gap) - kLift) < 2e-3f, "lifted",
+                up.has_value() ? "lowest foot point " + fmt(lifted_gap * 1000.0f) + " mm above the floor after a 100 mm lift"
+                               : "no floor beneath");
+
+        // The drop at 1x: Run, then frames until the body is still (speed under 2 cm/s for half a second) or the limit.
+        constexpr int kStillFrames = 30;      // half a second of frames at 60 a second
+        constexpr int kLimitFrames = 300;     // the stated limit: 5 s
+        constexpr float kStillSpeed = 0.02f;  // m/s
+        const InputFn live_input = [](int) { return FrameInput{}; };  // scripted-looking input: pump() does not double it (kIdlePace)
+        const auto one_frame = [&] { t.pump(1, live_input, draw); };  // one rendered frame = 1/60 s of simulation
+        const auto drop = [&](double& seconds_to_still, float& lowest_gap, float& rebound_gap) {
+            seconds_to_still = -1.0;
+            lowest_gap = std::numeric_limits<float>::infinity();
+            rebound_gap = 0.0f;
+            bool touched = false;
+            int calm = 0;
+            uint64_t calm_from_tick = 0;
+            for (int f = 1; f <= kLimitFrames; ++f) {
+                one_frame();
+                const editor::EditorRun* run = w().run();
+                if (run == nullptr) return;
+                const std::optional<FrameState> st = run->state_of(x500);
+                if (!st) return;
+                const std::optional<float> gap = foot_gap(st->pos);
+                if (gap) {
+                    lowest_gap = std::min(lowest_gap, *gap);
+                    if (*gap <= end_goal::kRestHi) touched = true;
+                    if (touched) rebound_gap = std::max(rebound_gap, *gap);
+                }
+                const bool quiet = glm::length(st->vel) < kStillSpeed && touched;
+                if (quiet && calm == 0) calm_from_tick = run->tick();
+                calm = quiet ? calm + 1 : 0;
+                if (calm >= kStillFrames) {
+                    seconds_to_still = static_cast<double>(calm_from_tick) * static_cast<double>(kBuiltinStepNs) * 1e-9;  // from Run, in simulated time
+                    return;
+                }
+            }
+        };
+        command(editor::Command::run);
+        double still_at = -1.0;
+        float lowest = 0.0f;
+        float rebound = 0.0f;
+        drop(still_at, lowest, rebound);
+        const editor::EditorRun* run = w().run();
+        const std::optional<FrameState> end_state = run != nullptr ? run->state_of(x500) : std::nullopt;
+        const std::optional<float> settled = end_state ? foot_gap(end_state->pos) : std::nullopt;
+        s.check(still_at >= 0.0, "still",
+                still_at >= 0.0 ? "still " + fmt(static_cast<float>(still_at)) + " s after Run (speed under 20 mm/s for 0.5 s; limit 5 s)"
+                                : "not still within 5 s");
+        const float settled_gap = settled.value_or(std::numeric_limits<float>::quiet_NaN());
+        s.check(settled_gap >= end_goal::kRestLo && settled_gap <= end_goal::kRestHi, "settled-on-feet",
+                settled.has_value() ? "lowest foot point " + fmt(settled_gap * 1000.0f) + " mm above the floor (within [-2, +5]); the lowest it went " +
+                                          fmt(lowest * 1000.0f) + " mm, the highest after first touch " + fmt(rebound * 1000.0f) + " mm"
+                                    : "no state");
+        then(30);
+        if (!s.check(!shows_a_path(w().panels().item_path) && !shows_a_path(w().panels().status), "path-off-screen-still",
+                     "no path in the Load from file field or the status line at the still")) {
+            return;
+        }
+        t.snapshot("editor_x500_feet");
+        then(30);  // the last 1x frame is held so the stop reads
+
+        // The same drop at 0.25x: one rendered frame per 4 ms built-in step is a quarter of real time (a frame is 16.7 ms).
+        command(editor::Command::stop);  // the run is gone; the lifted start pose is the scene's
+        t.sink().set_caption("editor  -  x500_feet  -  0.25x replay");
+        command(editor::Command::run);
+        command(editor::Command::pause);
+        for (int i = 0; i < 90; ++i) {
+            w().panels().commands.push_back(editor::Command::step);
+            t.pump(4, live_input, draw);  // one Step = 4 built-in steps = 16 ms of simulation, shown for 4 frames (67 ms): 0.25x
+        }
+        then(30);
+        command(editor::Command::stop);
+        t.sink().set_caption("editor  -  x500_feet");
+
+        // Put back: the lift and the placement undone, the camera where it was.
+        command(editor::Command::undo);
+        command(editor::Command::undo);
+        s.check(scene_now().vehicles.size() == before, "undone", std::to_string(scene_now().vehicles.size()) + " vehicles, as before");
+        session->camera() = cam_before;
+        then(10);
+    });
+
     // INT-15 (T3): Run air on the library's Phantom, placed as add_drone places
     // it and given an airflow region, the Pilot section arming it. The
     // worker's frames reach the view, which draws the streamlines and, once
@@ -1519,6 +1668,7 @@ void editor_tour(Tour& t, const fs::path& assets) {
         if (!s.check(write_box_gltf(crate, "crate", 0.4f), "crate-file", path_text(crate))) return;
         w().panels().item_path = path_text(crate);
         command(editor::Command::load_item);
+        w().panels().item_path.clear();  // the field shows what it read: a path on this machine, in the still and the film
         const bool armed = w().panels().armed.has_value();
         if (!s.check(armed, "imported",
                      armed ? "Load from file armed '" + w().panels().library.at(*w().panels().armed).name + "'"
@@ -2076,10 +2226,16 @@ void bodies_chapter(Tour& t) {
 }  // namespace
 
 int run_live_smoke(const TourOptions& options) {
-    std::vector<std::string> declared;
+    std::vector<std::string> all_steps;
     for (const StepName& st : kSteps) {
-        declared.push_back(std::string(st.main) + "." + std::string(st.sub));
+        all_steps.push_back(std::string(st.main) + "." + std::string(st.sub));
     }
+    // --only: refused before anything is touched when it names a step the ledger lacks; the run's declared steps are then the chosen ones.
+    if (const Result<void> chosen = validate_only(options.only, all_steps); !chosen) {
+        std::fprintf(stderr, "spade_sandbox: live smoke: %s\n", chosen.error().context.c_str());
+        return 2;
+    }
+    std::vector<std::string> declared = steps_to_run(options.only, all_steps);
     // Before anything is touched: an injection that could not make the run
     // red is refused, so a red run can never pass by mistake.
     if (const Result<void> valid = validate_injections(options.injections, declared, kKnownOpen); !valid) {
@@ -2108,6 +2264,7 @@ int run_live_smoke(const TourOptions& options) {
         std::fflush(stdout);
     };
 
+    const std::vector<std::string> run_steps = declared;  // what this run runs, for the end-of-run file checks (declared is moved below)
     Smoke smoke(std::move(declared), kKnownOpen, write);
     smoke.note("label " + (options.label.empty() ? std::string("(none)") : options.label));
     for (const Injection& inj : options.injections) {
@@ -2213,6 +2370,9 @@ int run_live_smoke(const TourOptions& options) {
     // the recording must not quietly show ImGui's built-in one instead.
     (void)smoke.check(sink->ui_font_loaded(), "ui-font",
                       sink->ui_font_loaded() ? "Inter loaded" : "the UI font did not load; see stderr");
+    (void)smoke.check(tour.path_watch().offences().empty(), "no-path-on-screen",
+                      std::to_string(tour.path_watch().texts_read()) + " texts read over " + std::to_string(tour.path_watch().reads()) +
+                          " step ends and stills, none naming a path on this machine");
     if (rec.piped()) {
         std::error_code ec;
         const std::uintmax_t size = fs::file_size(options.out_dir / "tour.mp4", ec);
@@ -2223,6 +2383,7 @@ int run_live_smoke(const TourOptions& options) {
                           "tour.mp4 " + std::to_string(size) + " bytes, the limit " + std::to_string(kSendableBytes));
     }
     for (std::size_t i = 0; i < kMains.size(); ++i) {
+        if (!poster_expected(run_steps, kMains[i])) continue;  // --only: a chapter this run did not run owes no poster
         const std::string name = poster_name(static_cast<uint32_t>(i) + 1u, kMains[i]);
         std::error_code ec;
         const std::uintmax_t size = fs::file_size(options.out_dir / name, ec);
@@ -2235,6 +2396,10 @@ int run_live_smoke(const TourOptions& options) {
         const std::string name = std::string(snap) + ".png";
         std::error_code ec;
         const std::uintmax_t size = fs::file_size(options.out_dir / name, ec);
+        if (ec && !missing_still_is_anomaly(options.only)) {
+            smoke.note(name + " not written by this run (--only)");
+            continue;
+        }
         (void)smoke.check(!ec && size > 0u, "still-" + std::string(snap),
                           ec ? name + ": " + ec.message() : name + " " + std::to_string(size) + " bytes");
     }

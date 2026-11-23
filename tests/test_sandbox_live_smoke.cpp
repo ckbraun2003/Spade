@@ -14,12 +14,15 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "../sandbox/editor_shown_file.hpp"
+#include "../sandbox/live_ledger.hpp"
 #include "../sandbox/live_smoke.hpp"
 #include "../sandbox/png_writer.hpp"
 
@@ -565,4 +568,195 @@ TEST(LiveSmokePng, AnImageLargerThanOneStoredBlockSpansSeveral) {
     EXPECT_EQ(d.raw[801], 0u);              // row 1's filter byte
     EXPECT_EQ(d.raw[802], rgba[800]);       // row 1 starts 800 bytes into the image
     EXPECT_EQ(d.raw.back(), rgba.back());
+}
+
+// ===========================================================================
+// The tour's ledger itself (sandbox/live_ledger.hpp, a header so that this can read it): the steps and stills the tour declares, in order. A
+// tour that counts steps or stills re-counts when this changes (docs/design/consumers.md).
+// ===========================================================================
+namespace {
+std::vector<std::string> ledger_steps() {
+    std::vector<std::string> out;
+    for (const auto& st : spade::sandbox::live::kSteps) out.push_back(std::string(st.main) + "." + std::string(st.sub));
+    return out;
+}
+}  // namespace
+
+TEST(LiveSmokeLedger, TheTourDeclaresItsStepsAndStillsInOrder) {
+    const std::vector<std::string> steps = ledger_steps();
+    EXPECT_EQ(steps.size(), 25u);  // 24 + editor.x500_feet (video #2)
+    EXPECT_EQ(spade::sandbox::live::kSnapshots.size(), 22u);  // 21 + editor_x500_feet
+    const auto at = [&](std::string_view name) {
+        return std::find(steps.begin(), steps.end(), std::string(name)) - steps.begin();
+    };
+    EXPECT_LT(at("editor.add_drone"), at("editor.x500_feet"));
+    EXPECT_LT(at("editor.x500_feet"), at("editor.airflow"));
+    EXPECT_NE(std::find(spade::sandbox::live::kSnapshots.begin(), spade::sandbox::live::kSnapshots.end(), "editor_x500_feet"),
+              spade::sandbox::live::kSnapshots.end());
+    EXPECT_LT(at("editor.airflow"), at("editor.add_objects"));
+    // a skip injection of a declared step is accepted (it makes the run red); of one the ledger lacks, refused
+    using spade::sandbox::live::Injection;
+    using spade::sandbox::live::validate_injections;
+    const std::vector<Injection> skip_airflow = {{Injection::Kind::skip, "editor.airflow"}};
+    const std::vector<Injection> skip_x500 = {{Injection::Kind::skip, "editor.x500_feet"}};
+    const std::vector<Injection> anomaly_x500 = {{Injection::Kind::anomaly, "editor.x500_feet/injected"}};
+    const std::vector<KnownOpen> none;
+    EXPECT_TRUE(validate_injections(skip_airflow, steps, none).has_value());
+    EXPECT_TRUE(validate_injections(skip_x500, steps, none).has_value()) << "a skip of the new step makes the run red";
+    EXPECT_TRUE(validate_injections(anomaly_x500, steps, none).has_value()) << "an anomaly in the new step makes the run red";
+}
+
+// ===========================================================================
+// --only: a short run of chosen steps (a feature film runs one step, not the whole tour)
+// ===========================================================================
+TEST(LiveSmokeOnly, TheListIsParsedAndCheckedAgainstTheLedger) {
+    using spade::sandbox::live::parse_only;
+    using spade::sandbox::live::validate_only;
+    const auto one = parse_only("editor.x500_feet");
+    ASSERT_TRUE(one.has_value());
+    ASSERT_EQ(one->size(), 1u);
+    EXPECT_EQ((*one)[0], "editor.x500_feet");
+    const auto two = parse_only("editor.x500_feet,drone_box.attitude");
+    ASSERT_TRUE(two.has_value());
+    EXPECT_EQ(two->size(), 2u);
+    EXPECT_FALSE(parse_only("").has_value());
+    EXPECT_FALSE(parse_only("editor.x500_feet,").has_value()) << "a trailing comma names nothing";
+    EXPECT_FALSE(parse_only("editor").has_value()) << "a step is main.sub";
+
+    const std::vector<std::string> declared = ledger_steps();
+    EXPECT_TRUE(validate_only(*one, declared).has_value());
+    const std::vector<std::string> nope = {"editor.nope"};
+    const auto bad = validate_only(nope, declared);
+    ASSERT_FALSE(bad.has_value());
+    EXPECT_NE(bad.error().context.find("editor.nope"), std::string::npos) << bad.error().context;
+    EXPECT_NE(bad.error().context.find("editor.x500_feet"), std::string::npos) << "it lists the steps there are: " << bad.error().context;
+}
+
+TEST(LiveSmokeOnly, TheStepsToRunAreTheChosenOnesAndWhatTheyNeed) {
+    using spade::sandbox::live::steps_to_run;
+    const std::vector<std::string> declared = ledger_steps();
+    EXPECT_EQ(steps_to_run({}, declared), declared) << "no --only: the whole tour";
+    const std::vector<std::string> x = {"editor.x500_feet"};
+    const std::vector<std::string> want_x = {"editor.open", "editor.x500_feet"};
+    EXPECT_EQ(steps_to_run(x, declared), want_x) << "an editor step needs the editor open, and runs in ledger order";
+    const std::vector<std::string> d = {"drone_box.attitude"};
+    const std::vector<std::string> want_d = {"drone_box.attitude"};
+    EXPECT_EQ(steps_to_run(d, declared), want_d) << "a step of another chapter needs nothing added";
+    const std::vector<std::string> both = {"editor.x500_feet", "drone_box.attitude"};
+    const std::vector<std::string> want_both = {"drone_box.attitude", "editor.open", "editor.x500_feet"};
+    EXPECT_EQ(steps_to_run(both, declared), want_both) << "ledger order, not the list's";
+}
+
+// What a run owes at its end under --only: the verification run of editor.x500_feet failed 25 whole-tour checks (every poster and still of the steps
+// it had not run).
+TEST(LiveSmokeOnly, AShortRunOwesOnlyTheFilesOfItsOwnChapters) {
+    using spade::sandbox::live::missing_still_is_anomaly;
+    using spade::sandbox::live::poster_expected;
+    using spade::sandbox::live::steps_to_run;
+    const std::vector<std::string> declared = ledger_steps();
+    const std::vector<std::string> only = {"editor.x500_feet"};
+    const std::vector<std::string> ran = steps_to_run(only, declared);  // editor.open, editor.x500_feet
+    EXPECT_TRUE(poster_expected(ran, "editor")) << "editor.open writes the editor's poster";
+    EXPECT_FALSE(poster_expected(ran, "drone_box"));
+    EXPECT_FALSE(poster_expected(ran, "airflow"));
+    EXPECT_FALSE(poster_expected(ran, "bodies"));
+    EXPECT_FALSE(poster_expected(ran, "batch"));
+    for (const char* main : {"drone_box", "airflow", "editor", "bodies", "batch"}) {
+        EXPECT_TRUE(poster_expected(declared, main)) << "the whole tour owes every poster: " << main;
+    }
+    EXPECT_TRUE(missing_still_is_anomaly(std::vector<std::string>{})) << "the whole tour still fails a still that was not written";
+    EXPECT_FALSE(missing_still_is_anomaly(only)) << "a short run writes only its own stills";
+}
+
+// A path on this machine must never be on screen in a still or a film: the first verification run of editor.x500_feet showed one in the Load
+// from file field.
+TEST(LiveSmokePaths, TextThatNamesAPathOnThisMachineIsRecognised) {
+    using spade::sandbox::live::shows_a_path;
+    EXPECT_TRUE(shows_a_path("C:\\Users\\Someone\\Desktop\\Projects\\spade-wt\\interface\\build-smoke\\editor_work\\x500_contact.model.yaml"));
+    EXPECT_TRUE(shows_a_path("c:/Users/Someone/work/x.yaml"));
+    EXPECT_TRUE(shows_a_path("D:\\builds\\run1\\x.yaml")) << "any drive path";
+    EXPECT_TRUE(shows_a_path("saved 'x' to /Users/someone/lib/x.yaml (undo removes it)"));
+    EXPECT_TRUE(shows_a_path("loaded from /home/someone/x.yaml"));
+    EXPECT_TRUE(shows_a_path("User Guide: the guide is missing (C:\\Program Files\\Spade\\guide.html)"));
+}
+
+TEST(LiveSmokePaths, OrdinaryOnScreenTextIsNotTakenForAPath) {
+    using spade::sandbox::live::shows_a_path;
+    EXPECT_FALSE(shows_a_path(""));
+    EXPECT_FALSE(shows_a_path("x500_contact, armed"));
+    EXPECT_FALSE(shows_a_path("hover.scene.yaml *"));
+    EXPECT_FALSE(shows_a_path("Flying x500_contact, disarmed"));
+    EXPECT_FALSE(shows_a_path("tick 420  1005 frames  at 15:30")) << "a colon in a clock is not a drive";
+    EXPECT_FALSE(shows_a_path("Position (m) 0.000 0.315 -1.500"));
+    EXPECT_FALSE(shows_a_path("library/drones/phantom.yaml")) << "a relative name inside the library is not a path on this machine";
+}
+
+// The general check: what the tour's steps leave on screen is read at every step's end and before every still. These are the texts the editor draws
+// after the tour's add_objects, save and part steps as they stand today (gate 50's code), with a made-up user folder.
+TEST(LiveSmokePaths, TheWatchNamesTheStepAndTheFieldOfEveryPathAndNeverTheText) {
+    using spade::sandbox::live::PathWatch;
+    using spade::sandbox::live::ScreenText;
+    PathWatch watch;
+    const std::vector<ScreenText> after_add_objects = {
+        {"item_path", "C:\\Users\\Someone\\Desktop\\Projects\\spade-wt\\interface\\build-smoke\\editor_work\\crate.gltf"},
+        {"status", "armed 'crate'"},
+        {"title", "hover.scene.yaml *"},
+    };
+    const std::vector<ScreenText> after_save = {
+        {"item_path", ""},
+        {"status", "saved 'hover_copy' to C:/Users/Someone/work/library/drones/hover_copy.yaml"},
+        {"title", "hover_copy.scene.yaml"},
+    };
+    const std::vector<ScreenText> after_part = {
+        {"selected_source", "C:\\Users\\Someone\\work\\crate.gltf"},
+        {"status", ""},
+    };
+    const std::vector<ScreenText> clean = {{"item_path", ""}, {"status", "x500_contact, armed"}, {"title", "hover.scene.yaml *"}};
+    watch.read("editor.add_objects", after_add_objects);
+    watch.read("editor.save", after_save);
+    watch.read("editor.part", after_part);
+    watch.read("editor.undo", clean);
+    EXPECT_EQ(watch.reads(), 4u);
+    EXPECT_EQ(watch.texts_read(), 11u) << "every text of every read is counted, the clean ones too";
+    ASSERT_EQ(watch.offences().size(), 3u);
+    EXPECT_EQ(watch.offences().at(0), "editor.add_objects: item_path");
+    EXPECT_EQ(watch.offences().at(1), "editor.save: status");
+    EXPECT_EQ(watch.offences().at(2), "editor.part: selected_source");
+    for (const std::string& line : watch.offences()) {
+        EXPECT_EQ(line.find("Someone"), std::string::npos) << "an offence never repeats the path: " << line;
+    }
+}
+
+TEST(LiveSmokePaths, ACleanScreenLeavesNoOffence) {
+    using spade::sandbox::live::PathWatch;
+    using spade::sandbox::live::ScreenText;
+    PathWatch watch;
+    const std::vector<ScreenText> clean = {{"item_path", ""}, {"status", "saved 'hover_copy' to library/drones/hover_copy.yaml"}, {"title", "hover.scene.yaml *"}};
+    watch.read("editor.save", clean);
+    watch.read("still editor_save", clean);
+    EXPECT_EQ(watch.reads(), 2u);
+    EXPECT_EQ(watch.texts_read(), 6u);
+    EXPECT_TRUE(watch.offences().empty());
+}
+
+// What the save status shows of the saved file (the lead's rule): inside the library folder, relative to it; anywhere else, the file name alone; never
+// a ..\ chain.
+TEST(LiveSmokePaths, ASavedFileInsideTheLibraryIsShownRelativeToIt) {
+    using spade::sandbox::editor::shown_file;
+    const std::filesystem::path lib = std::filesystem::path("C:/Users/Someone/work/assets/library");
+    EXPECT_EQ(shown_file(lib / "drones" / "hover_copy.yaml", lib), "drones/hover_copy.yaml");
+    EXPECT_EQ(shown_file(lib / "library.yaml", lib), "library.yaml");
+    EXPECT_EQ(shown_file(lib / "drones" / ".." / "drones" / "x.yaml", lib), "drones/x.yaml") << "an inside file written with a .. in it is still inside";
+}
+
+TEST(LiveSmokePaths, ASavedFileOutsideTheLibraryIsShownByItsNameAlone) {
+    using spade::sandbox::editor::shown_file;
+    const std::filesystem::path lib = std::filesystem::path("C:/Users/Someone/work/assets/library");
+    for (const char* outside : {"C:/Users/Someone/Desktop/hover_copy.yaml", "C:/Users/Someone/work/assets/library_old/x.yaml",
+                                "D:/elsewhere/hover_copy.yaml", "C:/Users/Someone/work/assets/hover_copy.yaml"}) {
+        const std::string shown = shown_file(std::filesystem::path(outside), lib);
+        EXPECT_EQ(shown, std::filesystem::path(outside).filename().generic_string()) << outside;
+        EXPECT_EQ(shown.find(".."), std::string::npos) << "never a .. chain: " << shown;
+        EXPECT_EQ(shown.find("Someone"), std::string::npos) << "never the user's folders: " << shown;
+    }
 }
