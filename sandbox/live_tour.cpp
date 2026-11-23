@@ -40,6 +40,7 @@
 #include "render_parts/render_parts.hpp"
 #include "app_about.hpp"
 #include "bodies_session.hpp"
+#include "editor_drawn_texts.hpp"
 #include "editor_session.hpp"
 #include "pilot_keys.hpp"
 #include "end_goal_checks.hpp"
@@ -654,8 +655,7 @@ void editor_tour(Tour& t, const fs::path& assets) {
     t.set_screen_texts([&session]() -> std::vector<ScreenText> {
         if (!session) return {};
         const editor::EditorPanels& p = session->workspace().panels();
-        return {{"item_path", p.item_path}, {"status", p.status},       {"title", p.title},           {"path", p.path},
-                {"selected_source", p.selected_source}, {"view_note", p.view_note}, {"close_prompt", p.close_prompt}};
+        return editor::drawn_texts(p);
     });
     // The lambda above reads `session`, which ends with this function: the harness must not call it afterwards.
     struct ClearScreenTexts {
@@ -2370,9 +2370,7 @@ int run_live_smoke(const TourOptions& options) {
     // the recording must not quietly show ImGui's built-in one instead.
     (void)smoke.check(sink->ui_font_loaded(), "ui-font",
                       sink->ui_font_loaded() ? "Inter loaded" : "the UI font did not load; see stderr");
-    (void)smoke.check(tour.path_watch().offences().empty(), "no-path-on-screen",
-                      std::to_string(tour.path_watch().texts_read()) + " texts read over " + std::to_string(tour.path_watch().reads()) +
-                          " step ends and stills, none naming a path on this machine");
+    (void)smoke.check(tour.path_watch().offences().empty(), "no-path-on-screen", tour.path_watch().summary());
     if (rec.piped()) {
         std::error_code ec;
         const std::uintmax_t size = fs::file_size(options.out_dir / "tour.mp4", ec);

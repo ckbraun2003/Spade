@@ -8,6 +8,7 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 namespace spade::sandbox::editor {
 
@@ -15,6 +16,14 @@ namespace spade::sandbox::editor {
     const std::filesystem::path relative = file.lexically_normal().lexically_relative(library_dir.lexically_normal());
     const bool inside = !relative.empty() && relative != "." && *relative.begin() != "..";
     return inside ? relative.generic_string() : file.filename().generic_string();
+}
+
+// The inspector's line for the file an imported asset's mesh came from: the file's NAME alone, never the folders it sat in on the user's machine
+// (the same rule as the title). Split on both kinds of separator, so a Windows path is cut the same on every platform. The panels draw this and the
+// live smoke's path watch reads this (drawn_texts), so the watch sees what is drawn.
+[[nodiscard]] inline std::string imported_from_text(std::string_view source) {
+    const std::size_t cut = source.find_last_of("/\\");
+    return "imported from " + std::string(cut == std::string_view::npos ? source : source.substr(cut + 1));
 }
 
 }  // namespace spade::sandbox::editor

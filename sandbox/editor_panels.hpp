@@ -198,6 +198,14 @@ struct EditorPanels {
 
     // ---- Both: the last refusal, verbatim (INT-2); empty when none.
     std::string status;
+
+    // ---- Written by the panels as they draw, for the live smoke's on-screen path watch: which of the strings above reach the screen. Reset at
+    // the start of every draw; a string the panels do not draw is not on screen, whatever it holds.
+    struct Drawn {
+        bool scene_file_field = false;  // the File menu is open and its "Scene file" field shows `path`
+        bool imported_from = false;     // the inspector shows "imported from <selected_source>"
+    };
+    Drawn drawn;
 };
 
 // Inspects library item `i` when it has grades (has_grades(): a part, or a
