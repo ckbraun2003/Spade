@@ -97,6 +97,7 @@ TEST(InstalledLayout, NoEditorSourceReadsAPathTheInstallerDoesNotCarry) {
     const std::regex assets_literal(R"(\bassets\w*(\(\))?\s*/\s*"([^"/]+))");
     const std::regex parent_literal(R"(parent_path\(\)\s*/\s*"([^"/]+))");
     const std::regex assets_dynamic(R"(\bassets\w*(\(\))?\s*/\s*[A-Za-z_(])");
+    const std::regex string_literal(R"re("(?:[^"\\]|\\.)*")re");  // text in quotes is a message, not a join: the dynamic check looks at the code around it
 
     // THE DYNAMIC JOINS, pinned by file: a join of the assets root with a variable. live_tour.cpp's work copy joins `assets / dir` for dir in {"scenes", "worlds"}.
     const std::set<std::string> pinned_dynamic = {"live_tour.cpp:assets / dir"};
@@ -112,7 +113,8 @@ TEST(InstalledLayout, NoEditorSourceReadsAPathTheInstallerDoesNotCarry) {
         }
         EXPECT_EQ(l.text.find("SPADE_REPO_DIR"), std::string::npos) << l.file << ":" << l.number << " reads the source tree: " << l.text;
         EXPECT_EQ(l.text.find("\"flow_movie\""), std::string::npos) << l.file << ":" << l.number << " reads tools/flow_movie, which an install does not have: " << l.text;
-        if (std::regex_search(l.text, assets_dynamic) && !std::regex_search(l.text, assets_literal)) {
+        const std::string code_only = std::regex_replace(l.text, string_literal, "\"\"");
+        if (std::regex_search(code_only, assets_dynamic) && !std::regex_search(l.text, assets_literal)) {
             seen_dynamic.insert(l.file + ":assets / dir");  // the only dynamic form pinned is `assets / dir`
             EXPECT_TRUE(l.text.find("assets / dir") != std::string::npos)
                 << l.file << ":" << l.number << " joins the assets root with a run-time value; pin it in this test (and make sure the folder is carried):\n  " << l.text;
