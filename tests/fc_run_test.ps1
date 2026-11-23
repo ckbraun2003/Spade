@@ -162,10 +162,10 @@ exit /b 0
     Expect 'pass' ($r.Summary.Contains('tests skipped: 0')) 'no skipped count'
     Expect 'pass' (Test-Path -LiteralPath (Join-Path (Join-Path $outRoot 'case-pass') 'ctest.log')) 'no ctest.log in the run folder'
     # -PublishOffboard is only forwarded to px4-sitl.ps1's start (the default start above carries no such switch, and the stop call never does)
-    $r = Run 'offboard' 'case-offb' 0 0 0 $passBody @('-PublishOffboard')
-    Expect 'offboard' ($r.Code -eq 0) "exit $($r.Code): $($r.Text)"
-    Expect 'offboard' ($r.Calls -contains 'start case-offb 10.0.0.7 offboard') "the start did not carry -PublishOffboard: $($r.Calls -join ' / ')"
-    Expect 'offboard' (@($r.Calls | Where-Object { $_ -eq 'stop case-offb' }).Count -eq 1) 'the container was not stopped exactly once'
+    $ro = Run 'offboard' 'case-offb' 0 0 0 $passBody @('-PublishOffboard')  # $ro, not $r: the k10 block below still reads the pass run's $r
+    Expect 'offboard' ($ro.Code -eq 0) "exit $($ro.Code): $($ro.Text)"
+    Expect 'offboard' ($ro.Calls -contains 'start case-offb 10.0.0.7 offboard') "the start did not carry -PublishOffboard: $($ro.Calls -join ' / ')"
+    Expect 'offboard' (@($ro.Calls | Where-Object { $_ -eq 'stop case-offb' }).Count -eq 1) 'the container was not stopped exactly once'
     # k10: the autopilot log's path is relative to the run folder; what ctest printed and wrote has the home folder redacted (and still has its line).
     $passFolder = Join-Path $outRoot 'case-pass'
     Expect 'k10' ($r.Summary -match '(?m)^autopilot log: px4-log\\2026-11-21\\px4\.ulg\r?$') "the autopilot log is not given relative to the run folder: $($r.Summary)"
