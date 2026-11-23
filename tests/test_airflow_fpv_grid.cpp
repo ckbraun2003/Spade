@@ -4,7 +4,7 @@
 // docs/design/interface/records/2026-11-21-fpv-kit-sources.md: +-69.534 mm along and +-89.000 mm across, a 225.9 mm diagonal).
 //
 //   AirflowFpvGrid.TheBoxIsRectangularAtOnePointTwoFiveMillimetresAndWithinTheCaps   252 x 237 x 284 (x along the kit, z across): fewer cells than the
-//                                                X500's 270 x 237 x 270; the engine's grid cap with the case's faces and solids; the device runner's 4 GiB at
+//                                                X500's 270 x 237 x 270; the engine's grid cap with the case's faces and solids; the device runner's budget less its reserve (6.75 GiB on the 3060 Ti) at
 //                                                234.6 B a cell
 //   AirflowFpvGrid.TheHoldLeavesOneAndAHalfRadiiAboveTheHubsInWholeRows   d1_fpv_hold(hub height): 1.5 R of open air above the hubs, the kernel's
 //                                                reach and 4 cells of room, about 0.2 m of wake below, a whole number of rows

@@ -22,7 +22,7 @@
 //   X500Balance.TheBalanceSpeedHoldsAQuarterOfTheWeight   the grid-free BEMT (tests/bemt_reference.hpp) bisected for W/4 = 4.0027 N:
 //                                                thrust within 0.1% of the target; the speed against the chain's own static-thrust speed
 //   AirflowX500.TheTwoAndAHalfMillimetreGridIsWithinTheCapWithItsSolids   270 x 237 x 270 at 2.5 mm; check_grid(kD1X500Grid, the case's
-//                                                faces, with solids); the device runner's 4 GiB at 234.6 B a cell
+//                                                faces, with solids); the device runner's budget less its reserve (6.75 GiB on the 3060 Ti) at 234.6 B a cell
 //   AirflowX500.TheRotorsReachStaysInsideTheBoxWithRoomAbove   the discs' reach and the open air above and below and at the sides
 //   AirflowX500.TheLinesThrustAgainstTheStepInOneRotorOnTheCpu   L105, opt-in (SPADE_L105=1): the lines' thrust against h, one rotor on the CPU
 // ---------------------------------------------------------------------------

@@ -119,8 +119,8 @@ TEST(AirflowCheckGrid, AClosedDomainWithANetFluxIsRefusedByName) {
 }
 
 // O193: the host's cap is a STATED number, not the device's budget and not the machine's free RAM (a case file must validate the same on every run and
-// every machine): 16 GiB, twice the 8 GiB card the plan targets, so a validation never refuses what the device can run. The old 4 GiB refused the
-// 30 M-cell full-box grid (about 6 GB with solids) that the GPU ran.
+// every machine): 16 GiB. It holds the 30 M-cell full-box grid (about 6 GB with solids) that the GPU ran and the old 4 GiB refused; it is a policy
+// number, not a measurement of any one machine or card.
 TEST(AirflowCheckGrid, TheHostCapIsTheStatedSixteenGibAndASixGigabyteGridPasses) {
     EXPECT_EQ(kGridByteCap, uint64_t{16} << 30);
     const GridShape shape{312, 312, 312, 0.00125f};  // 30.4 M cells

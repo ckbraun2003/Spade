@@ -79,7 +79,7 @@ TEST(AirflowGrid, RefusesAShapeItCannotStep) {
 // The lead's fold-in (2026-10-05): the cell cap alone let a 1024^3 grid
 // (about 16 GiB of faces and cells) through to std::vector::assign, which
 // throws bad_alloc out of a function that promises a Result (L6). The bytes
-// are counted in 64 bits and refused past the spec's 4 GiB airflow cap.
+// are counted in 64 bits and refused past the stated host cap (16 GiB, O193).
 TEST(AirflowGrid, CountsItsBytesInSixtyFourBits) {
     using spade::physics::airflow::grid_bytes;
     const uint64_t n = 1024;
