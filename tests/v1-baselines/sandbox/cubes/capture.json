@@ -1,7 +1,7 @@
 {
     "scene":  "cubes",
     "tool":  "sandbox",
-    "exe":  "C:\\Users\\ckbra\\Desktop\\spade-wt\\interface\\build-ninja\\release\\bin\\Sandbox.exe",
+    "exe":  "build-ninja/release/bin/Sandbox.exe",
     "exe_sha256":  "21a28909734775e4409cb17d6d6b27f03758550176feb74b4bb81df09033468b",
     "exe_mtime":  "2026-10-02T03:57:06.6109929Z",
     "args":  [

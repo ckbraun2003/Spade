@@ -1,7 +1,7 @@
 {
     "scene":  "gate",
     "tool":  "viewer",
-    "exe":  "C:\\Users\\ckbra\\Desktop\\spade-wt\\interface\\build-ninja\\release\\bin\\spade_viewer.exe",
+    "exe":  "build-ninja/release/bin/spade_viewer.exe",
     "exe_sha256":  "630832ec0c90b05bfefa0f4d21c201053c4b998e963118074031b2a88f662797",
     "exe_mtime":  "2026-10-03T04:21:35.0874684Z",
     "args":  [
