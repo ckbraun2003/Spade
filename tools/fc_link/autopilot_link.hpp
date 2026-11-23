@@ -63,6 +63,7 @@ class AutopilotLink {
     uint64_t boot_steps_ = 0;         // booting replies so far
     uint64_t boot_end_usec_ = 0;      // the autopilot's clock at the end of boot: the offset of the host's time
     bool boot_over_ = false;
+    mavlink::HilSensor last_{};       // the last message sent: a group with no new sample carries its last values (it is not marked updated)
 };
 
 }  // namespace spade::fc_link
