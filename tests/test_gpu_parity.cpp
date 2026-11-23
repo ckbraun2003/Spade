@@ -739,19 +739,32 @@ void run_parity(const Scenario& scenario, std::string_view label, const std::vec
 // payload, one float is edited in a copy, and restore() takes it back -- the
 // engine's own parser and restore path, so no body is edited behind its back.
 // ---------------------------------------------------------------------------
-[[nodiscard]] Result<ParityReport> one_ulp_control(const Scenario& scenario, const std::vector<BandEntry>& table) {
+// ONE pair of runs, read at every tick in `horizons` (ascending, each at most
+// the scenario's steps): advance_scenario() is the resume primitive, so a pair
+// stopped at a quarter, a half and the whole is the same as three pairs run to
+// each of them (the replay guarantee), at 1/1.75 of the cost -- which is what
+// keeps the debug build inside its time limit when the box is loaded.
+[[nodiscard]] Result<std::vector<ParityReport>> one_ulp_control(const Scenario& scenario,
+                                                                const std::vector<BandEntry>& table,
+                                                                std::span<const uint64_t> horizons) {
     const BackendDesc cpu{.kind = BackendKind::cpu};
     Result<Simulation> base = spade::testing::start_scenario(scenario, cpu);
     if (!base) return std::unexpected(base.error());
     Result<Simulation> nudged = start_nudged(scenario, 0);
     if (!nudged) return std::unexpected(nudged.error());
-    if (const Result<void> a = spade::testing::advance_scenario(scenario, *base, scenario.steps); !a) {
-        return std::unexpected(a.error());
+    std::vector<ParityReport> reports;
+    for (const uint64_t horizon : horizons) {
+        if (const Result<void> a = spade::testing::advance_scenario(scenario, *base, horizon); !a) {
+            return std::unexpected(a.error());
+        }
+        if (const Result<void> b = spade::testing::advance_scenario(scenario, *nudged, horizon); !b) {
+            return std::unexpected(b.error());
+        }
+        Result<ParityReport> report = compare_arrays(base->arenas(), nudged->arenas(), table);
+        if (!report) return std::unexpected(report.error());
+        reports.push_back(std::move(*report));
     }
-    if (const Result<void> b = spade::testing::advance_scenario(scenario, *nudged, scenario.steps); !b) {
-        return std::unexpected(b.error());
-    }
-    return compare_arrays(base->arenas(), nudged->arenas(), table);
+    return reports;
 }
 
 [[nodiscard]] Result<spade::testing::LoadedScenario> load_scenario(std::string_view name) {
@@ -2858,18 +2871,20 @@ TEST(ParityChaos, OneUlpControlAtEachScenariosHorizon) {
     const ToleranceBand open{1.0e30f, 1.0e30f};  // report-only
     std::printf("\n=== one-ulp CPU control (max |gap|, A, R) ===\n");
     for (const auto& [name, full] : scenes) {
-        for (const uint64_t parts : {4u, 2u, 1u}) {
-            Scenario scenario = full;
-            scenario.steps = full.steps / parts;
-            const Result<ParityReport> report =
-                one_ulp_control(scenario, body_bands(open, open, open, open, open));
-            ASSERT_TRUE(report.has_value()) << name << ": " << report.error().context;
+        // A quarter, a half and the whole horizon from ONE pair of runs.
+        const std::array<uint64_t, 3> horizons{full.steps / 4u, full.steps / 2u, full.steps};
+        const Result<std::vector<ParityReport>> reports =
+            one_ulp_control(full, body_bands(open, open, open, open, open), horizons);
+        ASSERT_TRUE(reports.has_value()) << name << ": " << reports.error().context;
+        ASSERT_EQ(reports->size(), horizons.size()) << name;
+        for (std::size_t h = 0; h < horizons.size(); ++h) {
+            const ParityReport* report = &(*reports)[h];
             const spade::testing::QuantityReport& pos = report->quantities[0];
             const spade::testing::QuantityReport& vel = report->quantities[1];
             const spade::testing::QuantityReport& sf = report->quantities[4];
             std::printf("control %-26s steps %5llu  pos max %.3e A %.3e R %.3e  vel max %.3e A %.3e R %.3e"
                         "  sf max %.3e A %.3e R %.3e\n",
-                        name.c_str(), static_cast<unsigned long long>(scenario.steps),
+                        name.c_str(), static_cast<unsigned long long>(horizons[h]),
                         static_cast<double>(pos.max_abs), static_cast<double>(pos.near_zero_abs),
                         static_cast<double>(pos.far_rel), static_cast<double>(vel.max_abs),
                         static_cast<double>(vel.near_zero_abs), static_cast<double>(vel.far_rel),
