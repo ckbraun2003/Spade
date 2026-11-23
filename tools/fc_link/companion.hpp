@@ -23,8 +23,11 @@ public:
     // True when a heartbeat is due at simulated time `time_usec`: the first call, then once each period. A time that jumps far ahead is one
     // heartbeat, not a catch-up of the ones in between; a time that has not advanced past the last due one is never due.
     [[nodiscard]] bool due(uint64_t time_usec) {
-        (void)time_usec;
-        return false;  // RED: nothing is scheduled yet
+        if (period_usec_ == 0u) return true;  // no period: every call
+        if (started_ && time_usec < next_usec_) return false;
+        started_ = true;
+        next_usec_ = (time_usec / period_usec_ + 1u) * period_usec_;  // the next boundary of whole periods
+        return true;
     }
 
 private:
@@ -34,6 +37,6 @@ private:
 };
 
 // MAV_TYPE_GCS (6), MAV_AUTOPILOT_INVALID (8), no base mode, MAV_STATE_ACTIVE (4), MAVLink version 3.
-[[nodiscard]] inline mavlink::Heartbeat companion_heartbeat() { return mavlink::Heartbeat{}; }  // RED
+[[nodiscard]] inline mavlink::Heartbeat companion_heartbeat() { return mavlink::Heartbeat{0u, 6, 8, 0, 4, 3}; }
 
 }  // namespace spade::fc_link
