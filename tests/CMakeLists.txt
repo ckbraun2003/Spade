@@ -971,6 +971,18 @@ if(EXISTS "${PROJECT_SOURCE_DIR}/.git")  # a source tree with no .git (an export
         PASS_REGULAR_EXPRESSION "refused: .*inside a git work tree")
 endif()
 
+# The SDK install carries the map fetch tool, on Windows (the tool's HTTP layer is WinHTTP; elsewhere it is not installed): installs the SDK
+# into <build>/sdk_install_test (about 6 s, 108 MB; the script removes that prefix first and takes no path but the build dir) and checks that
+# bin/spade_geo_fetch.exe is there and answers --help. Nothing else runs the SDK install on Windows. LABELS spade, as above.
+if(WIN32)
+    add_test(NAME SdkInstall.GeoFetchIsInstalledAndAnswersHelp
+        COMMAND "${CMAKE_COMMAND}" -DBUILD_DIR=${PROJECT_BINARY_DIR} -DCONFIG=$<CONFIG>
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/sdk_install_geo_fetch.cmake")
+    set_tests_properties(SdkInstall.GeoFetchIsInstalledAndAnswersHelp PROPERTIES
+        LABELS spade
+        TIMEOUT 120)
+endif()
+
 # The part import tool's executable, as built (L88): it starts, prints its usage, and refuses a store inside a git work tree, all without
 # Python. The library's behaviour is tested in-process (test_part_import_run.cpp); this is only that the program is linked and runs.
 # LABELS spade, as above.
