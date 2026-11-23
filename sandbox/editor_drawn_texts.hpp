@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "editor_panels.hpp"
+#include "editor_shown_file.hpp"
 #include "live_smoke.hpp"
 
 namespace spade::sandbox::editor {
@@ -18,7 +19,7 @@ namespace spade::sandbox::editor {
     std::vector<live::ScreenText> out = {{"item_path", p.item_path}, {"status", p.status}, {"title", p.title}, {"view_note", p.view_note},
                                          {"close_prompt", p.close_prompt}};
     if (p.drawn.scene_file_field) out.push_back({"path", p.path});
-    if (p.drawn.imported_from) out.push_back({"selected_source", "imported from " + p.selected_source});
+    if (p.drawn.imported_from) out.push_back({"selected_source", imported_from_text(p.selected_source)});
     return out;
 }
 

@@ -747,13 +747,35 @@ TEST(LiveSmokePaths, APathTheEditorDoesDrawIsAnOffenceNamingTheFieldAndNotTheTex
     panels.path = "C:\\Users\\someone\\Desktop\\projects\\spade\\hover_copy.scene.yaml";
     panels.drawn.scene_file_field = true;  // the File menu is open and shows it
     panels.selected_source = "C:\\Users\\someone\\Desktop\\models\\gate.glb";
-    panels.drawn.imported_from = true;  // the inspector shows "imported from ..."
+    panels.drawn.imported_from = true;  // the inspector draws the file name only: not an offence (AnImportedAssetsInspectorLineShowsTheFileNameAlone)
     PathWatch watch;
     watch.read("editor.objects", spade::sandbox::editor::drawn_texts(panels));
-    ASSERT_EQ(watch.offences().size(), 2u);
+    ASSERT_EQ(watch.offences().size(), 1u);
     EXPECT_EQ(watch.offences()[0], "editor.objects: path");
-    EXPECT_EQ(watch.offences()[1], "editor.objects: selected_source");
     EXPECT_EQ(watch.summary().find("someone"), std::string::npos) << "an offence's line never carries the text";
+}
+
+// An imported asset's inspector line shows the file's name and no folder (O167: the deficiency is fixed, not captioned): the same rule as the title.
+TEST(LiveSmokePaths, AnImportedAssetsInspectorLineShowsTheFileNameAlone) {
+    using spade::sandbox::editor::imported_from_text;
+    EXPECT_EQ(imported_from_text("C:\\Users\\someone\\Desktop\\models\\gate.glb"), "imported from gate.glb");
+    EXPECT_EQ(imported_from_text("C:/Users/someone/models\\gate.glb"), "imported from gate.glb");
+    EXPECT_EQ(imported_from_text("/home/someone/models/gate.glb"), "imported from gate.glb");
+    EXPECT_EQ(imported_from_text("gate.glb"), "imported from gate.glb");
+}
+
+TEST(LiveSmokePaths, TheWatchFindsNoOffenceInAnImportedAssetsInspectorLine) {
+    using spade::sandbox::live::PathWatch;
+    spade::sandbox::editor::EditorPanels panels;
+    panels.selected_source = "C:\\Users\\someone\\Desktop\\models\\gate.glb";
+    panels.drawn.imported_from = true;  // the inspector draws the line
+    const auto texts = spade::sandbox::editor::drawn_texts(panels);
+    const auto drawn = std::find_if(texts.begin(), texts.end(), [](const auto& t) { return t.field == "selected_source"; });
+    ASSERT_NE(drawn, texts.end());
+    EXPECT_EQ(drawn->value, "imported from gate.glb") << "the watch reads the line as drawn";
+    PathWatch watch;
+    watch.read("editor.objects", texts);
+    EXPECT_TRUE(watch.offences().empty()) << (watch.offences().empty() ? "" : watch.offences().front());
 }
 
 TEST(LiveSmokePaths, TheEndCheckSaysWhatWasFoundNotThatNothingWas) {
