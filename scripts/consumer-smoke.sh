@@ -218,6 +218,19 @@ if [ -n "$empty_dirs" ]; then
 fi
 echo "consumer-smoke: install vulkan=$vulkan has no empty include directory"
 
+# The map fetch tool is part of the SDK install on Windows (its HTTP layer is WinHTTP; elsewhere it has none, so it is not installed). The
+# installed program must exist and answer --help with exit 0.
+case "$(uname -s)" in
+    MINGW* | MSYS* | CYGWIN*)
+        geo_fetch="$prefix/bin/spade_geo_fetch.exe"
+        if [ ! -f "$geo_fetch" ]; then
+            echo "consumer-smoke: FAIL install (vulkan=$vulkan): $geo_fetch is missing; tools/geo_fetch/CMakeLists.txt installs spade_geo_fetch (RUNTIME DESTINATION bin) on Windows"
+            exit 1
+        fi
+        stage geo-fetch-help "$geo_fetch" --help > /dev/null
+        ;;
+esac
+
 stage consumer-configure cmake -S "$src/tests/consumer" -B "$consumer" -G Ninja --no-warn-unused-cli \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_PREFIX_PATH="$prefix" \
