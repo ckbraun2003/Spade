@@ -1,5 +1,5 @@
 # Runs INSIDE the pinned px4-dev container, network off, script on stdin (the same image and form as golden_gen.py):
-#   docker run --rm -i --network none --entrypoint python3 px4io/px4-dev@sha256:82e3ddcf4bf3fa4dbc0be6489c6de4158d0efbc8530182c691184302027335ce - < golden_gen_commands.py
+#   docker run --rm -i --pull never --network none --entrypoint python3 px4io/px4-dev@sha256:82e3ddcf4bf3fa4dbc0be6489c6de4158d0efbc8530182c691184302027335ce - < golden_gen_commands.py
 # Makes the reference MAVLink v2 frames (pymavlink, common dialect) for the four flight commands the video #3 script sends, which
 # tests/test_fc_link_mavlink.cpp pins the codec's helpers against: arm (MAV_CMD_COMPONENT_ARM_DISARM 400, param1 1), disarm (the same, param1 0),
 # takeoff (MAV_CMD_NAV_TAKEOFF 22, yaw and position NaN = unchanged / here, altitude in param7, AMSL) and land (MAV_CMD_NAV_LAND 21, yaw and
