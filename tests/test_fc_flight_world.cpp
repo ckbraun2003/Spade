@@ -1,4 +1,4 @@
-// The flight film's world (tests/fc_flight_world.hpp) flown WITHOUT PX4: a made-up altitude controller (PI-D on the world's own truth, one common duty
+// The flight film's world (tests/fc_flight_world.hpp) flown WITHOUT PX4: a made-up altitude controller (PI-D on the world's own truth, the throttle
 // for the four motors, converted to rotor speeds through the model's own propulsion chain) takes the X500 from its feet to 2 m and holds it. This
 // answers, before any autopilot is involved, whether Physics' kit model can hold 2 m at a sane duty and what duty that is; it does not tune the model.
 #include <gtest/gtest.h>
@@ -9,16 +9,14 @@
 #include <cstdint>
 #include <iostream>
 
+#include "../sandbox/flight_controller.hpp"
+#include "analysis/case.hpp"
 #include "fc_flight_world.hpp"
-#include "fc_link/autopilot_map.hpp"
 
 namespace {
 
 using namespace fc_flight_test;
-namespace fcl = spade::fc_link;
 
-constexpr uint64_t kDtNs = 500'000;
-constexpr uint32_t kImuDivider = 8;  // 4 ms
 
 TEST(FcFlightWorld, TheX500StandsOnItsFeetAndALevelUnpoweredWorldHoldsStill) {
     std::optional<FlightWorld> w = make_flight_world();
@@ -34,7 +32,10 @@ TEST(FcFlightWorld, ACommonDutyControllerTakesTheX500ToTwoMetersAndHoldsItAtASan
     auto host = spade::fc_host::LockstepHost::open(w->sim, w->vehicle, w->bindings);
     ASSERT_TRUE(host.has_value()) << host.error().context;
     ASSERT_TRUE(w->model.model.propulsion.has_value());
-    const auto& chain = *w->model.model.propulsion;
+    // The attitude loop is the sandbox flight controller (the editor tour's; its own tests pin it): a quad cannot hold a height on a common duty alone, it
+    // tumbles (the first run of this test did: it rose to 0.9 m and fell back). Only the throttle comes from this test.
+    const auto controller = spade::sandbox::flight::FlightController::make(w->model.model, 1.225f);
+    ASSERT_TRUE(controller.has_value()) << controller.error().context;
 
     const double dt = kImuDivider * kDtNs * 1e-9;  // the controller's period, 4 ms
     double integral = 0.0, last_alt = 0.0, duty = 0.0;
@@ -48,15 +49,21 @@ TEST(FcFlightWorld, ACommonDutyControllerTakesTheX500ToTwoMetersAndHoldsItAtASan
         last_alt = alt;
         const double err = target - alt;
         integral = std::clamp(integral + err * dt, -2.0, 2.0);
-        duty = std::clamp(0.45 + 0.15 * err - 0.25 * vel + 0.05 * integral, 0.0, 1.0);
-        const auto omega = fcl::autopilot_duties_to_rotor_commands(chain, std::array<double, 4>{duty, duty, duty, duty}, 1.225, 1.0);
-        ASSERT_TRUE(omega.has_value()) << omega.error().context;
-        ASSERT_TRUE(host->command(*omega).has_value());
+        const double throttle = std::clamp(0.5 + 0.15 * err - 0.25 * vel + 0.05 * integral, 0.0, 1.0);
+        duty = spade::analysis::kDefaultIdleDuty + (1.0 - spade::analysis::kDefaultIdleDuty) * throttle;  // the arm rule's duty for the throttle
+        spade::analysis::Controls controls;
+        controls.armed = true;
+        controls.throttle = static_cast<float>(throttle);
+        const auto body = w->sim.body(w->vehicle.body);
+        ASSERT_TRUE(body.has_value());
+        std::array<float, 4> omega{};
+        ASSERT_TRUE(controller->command(controls, **body, omega).has_value());
+        ASSERT_TRUE(host->command(omega).has_value());
         ASSERT_TRUE(host->advance_to(static_cast<uint64_t>(k) * kImuDivider * kDtNs).has_value());
         ASSERT_TRUE(host->take_sensors().has_value());
         if (k % 250 == 0) {  // a line a second of simulated time: what the controller saw and sent
             const auto b = w->sim.body(w->vehicle.body);
-            std::cout << "t " << k * dt << " s  altitude " << alt << " m  vy " << (b ? static_cast<double>((*b)->vel.y) : 0.0) << "  duty " << duty << "  omega0 " << (*omega)[0] << " rad/s\n";
+            std::cout << "t " << k * dt << " s  altitude " << alt << " m  vy " << (b ? static_cast<double>((*b)->vel.y) : 0.0) << "  duty " << duty << "  omega0 " << omega[0] << " rad/s\n";
         }
         if (k * dt > 20.0) {  // the last five seconds
             duty_sum += duty;
