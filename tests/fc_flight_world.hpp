@@ -52,6 +52,8 @@ inline constexpr uint32_t kImuDivider = 8, kBaroDivider = 40, kMagDivider = 20, 
 // The centre of mass over the plane at rest on the feet: the design frame's centre of mass height minus the pads' lowest point (test_x500_ground_contact.cpp).
 inline constexpr double kRestComY = -0.0254301 - (-0.2153);
 inline constexpr double kRestDesignOriginY = 0.2153;
+// The ground plane (world y = 0) is this high above mean sea level, ISA datum: the barometer and the GNSS (the link's geo frame) must both say so.
+inline constexpr double kGroundAmslM = 488.0;
 
 [[nodiscard]] inline std::optional<FlightWorld> make_flight_world() {
     namespace x5 = spade::test::x500;

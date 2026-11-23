@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 
 #include "../sandbox/flight_controller.hpp"
@@ -24,6 +25,30 @@ TEST(FcFlightWorld, TheX500StandsOnItsFeetAndALevelUnpoweredWorldHoldsStill) {
     ASSERT_TRUE(w->sim.step(2000).has_value());  // one second, no power
     EXPECT_NEAR(w->altitude_m(), 0.0, 0.002) << "resting on its feet: the centre of mass where the ground contact test says it rests";
     ASSERT_EQ(w->bindings.size(), 4u) << "IMU, barometer, magnetometer, GNSS";
+}
+
+// THE NUMBER THIS PINS: the pressure altitude Spade's barometer SENDS (BaroSample::pressure_alt_m) at rest, which must be the ground's 488 m above sea level
+// (the datum the GNSS says through the link's geo frame) plus the centre of mass' few centimetres, not 0 m. It does not pin either of PX4's own figures;
+// those are what dry run 4 measures after this fix. (Dry run 3, before it: PX4's BARO altitude read 2.060 m for the truth's 1.990, 3.5% over, and its
+// FUSED height 2.032 m for the truth's 1.987, 4.5 cm or 2.26% over.)
+TEST(FcFlightWorld, TheBarometerReadsTheGroundAtTheSameAltitudeAboveSeaLevelAsTheGnss) {
+    std::optional<FlightWorld> w = make_flight_world();
+    ASSERT_TRUE(w.has_value());
+    auto host = spade::fc_host::LockstepHost::open(w->sim, w->vehicle, w->bindings);
+    ASSERT_TRUE(host.has_value()) << host.error().context;
+    ASSERT_TRUE(host->advance_to(200 * kDtNs).has_value());  // 0.1 s: past the barometer's first period (20 ms)
+    const auto samples = host->take_sensors();
+    ASSERT_TRUE(samples.has_value());
+    bool seen = false;
+    for (const spade::fc_host::Sample& s : *samples) {
+        if (s.kind != spade::fc_host::SensorKind::baro) continue;
+        spade::sensors::BaroSample b{};
+        ASSERT_EQ(s.size, sizeof(b));
+        std::memcpy(&b, s.bytes.data(), sizeof(b));
+        EXPECT_NEAR(b.pressure_alt_m, kGroundAmslM + w->rest_com_y, 1.0) << "the sensor sits at the centre of mass, a few centimetres over the ground";
+        seen = true;
+    }
+    EXPECT_TRUE(seen) << "a barometer sample in the first 0.1 s";
 }
 
 TEST(FcFlightWorld, ACommonDutyControllerTakesTheX500ToTwoMetersAndHoldsItAtASaneDuty) {
