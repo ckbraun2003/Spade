@@ -14,17 +14,17 @@ class Sink:
     def write(self, b):
         pass
 
-def mav(seq):
-    c = m.MAVLink(Sink(), srcSystem=1, srcComponent=200)
+def mav(seq, src=(1, 200)):
+    c = m.MAVLink(Sink(), srcSystem=src[0], srcComponent=src[1])
     c.seq = seq
     return c
 
 out = {'pymavlink_version': getattr(pymavlink, '__version__', 'unknown'), 'dialect': 'v20.common', 'frames': []}
 
-def add(name, seq, msg):
-    c = mav(seq)
+def add(name, seq, msg, src=(1, 200)):
+    c = mav(seq, src)
     b = msg.pack(c)
-    out['frames'].append({'name': name, 'seq': seq, 'sysid': 1, 'compid': 200, 'msgid': msg.get_msgId(), 'hex': bytes(b).hex(), 'len': len(b) - 12})
+    out['frames'].append({'name': name, 'seq': seq, 'sysid': src[0], 'compid': src[1], 'msgid': msg.get_msgId(), 'hex': bytes(b).hex(), 'len': len(b) - 12})
 
 nan = float('nan')
 add('command_long_arm', 11, m.MAVLink_command_long_message(target_system=1, target_component=1, command=400, confirmation=0,
@@ -35,12 +35,13 @@ add('command_long_takeoff', 13, m.MAVLink_command_long_message(target_system=1, 
     param1=0.0, param2=0.0, param3=0.0, param4=nan, param5=nan, param6=nan, param7=490.0))
 add('command_long_land', 14, m.MAVLink_command_long_message(target_system=1, target_component=1, command=21, confirmation=0,
     param1=0.0, param2=0.0, param3=0.0, param4=nan, param5=nan, param6=nan, param7=0.0))
-# COMMAND_ACK: PX4 answers from system 1 component 1, addressed to the sender (target 1/191). result: MAV_RESULT 0 accepted, 1 temporarily
+# COMMAND_ACK: PX4 answers FROM system 1 component 1 (src below), addressed to the sender of the command: the companion's 1/191, as the
+# heartbeat and the commands of the flight test are sent (target 1/191). result: MAV_RESULT 0 accepted, 1 temporarily
 # rejected, 2 denied. The last frame carries the extension fields (progress, result_param2) nonzero.
 for cmd, cname, seq in ((400, 'arm', 15), (22, 'takeoff', 18)):
     for res, rname in ((0, 'accepted'), (1, 'temporarily_rejected'), (2, 'denied')):
-        add('command_ack_%s_%s' % (cname, rname), seq + res, m.MAVLink_command_ack_message(command=cmd, result=res, progress=0, result_param2=0, target_system=1, target_component=191))
-add('command_ack_extension_fields', 21, m.MAVLink_command_ack_message(command=22, result=2, progress=255, result_param2=-3, target_system=1, target_component=191))
+        add('command_ack_%s_%s' % (cname, rname), seq + res, m.MAVLink_command_ack_message(command=cmd, result=res, progress=0, result_param2=0, target_system=1, target_component=191), src=(1, 1))
+add('command_ack_extension_fields', 21, m.MAVLink_command_ack_message(command=22, result=2, progress=255, result_param2=-3, target_system=1, target_component=191), src=(1, 1))
 c77 = m.mavlink_map[77]
 out['messages_info'] = {'77': {'name': 'COMMAND_ACK', 'crc_extra': c77.crc_extra, 'wire_order': list(c77.ordered_fieldnames)}}
 print('JSON-BEGIN')
