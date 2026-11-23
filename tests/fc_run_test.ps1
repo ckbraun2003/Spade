@@ -67,7 +67,7 @@ exit ([int] $env:FAKE_UP_CODE)
     # line the bare newest .ulg path or `none` ("no container named" first when it is gone), 3 docker unreachable, 6 no run folder known.
     # FAKE_PX4_START_CODE and FAKE_PX4_STOP (ulg | none | gone | <exit code>) steer it.
     Set-Content -LiteralPath (Join-Path $fake 'px4-sitl.ps1') @'
-param([string] $RunId, [string] $HostAddress, [string] $OutDir, [switch] $Stop)
+param([string] $RunId, [string] $HostAddress, [string] $OutDir, [switch] $Stop, [switch] $PublishOffboard)
 if ($Stop) {
     Add-Content -LiteralPath $env:FAKE_CALLS "stop $RunId"
     $mode = $env:FAKE_PX4_STOP
@@ -78,7 +78,7 @@ if ($Stop) {
     Write-Output (Join-Path $OutDir 'px4-log\2026-11-21\px4.ulg')
     exit 0
 }
-Add-Content -LiteralPath $env:FAKE_CALLS "start $RunId $HostAddress"
+Add-Content -LiteralPath $env:FAKE_CALLS ("start $RunId $HostAddress" + $(if ($PublishOffboard) { ' offboard' } else { '' }))
 switch ([int] $env:FAKE_PX4_START_CODE) {
     0 { Write-Output "px4-sitl: up spade-px4-$RunId -> ${HostAddress}:4560"; exit 0 }
     2 { Write-Output 'px4-sitl: no autopilot image spade-px4-sitl:v1.17.0 (build it from tools/fc_link/px4)'; exit 2 }
@@ -161,6 +161,11 @@ exit /b 0
     Expect 'pass' ($r.Summary.Contains('px4.ulg')) "the autopilot log path is not in the summary: $($r.Summary)"
     Expect 'pass' ($r.Summary.Contains('tests skipped: 0')) 'no skipped count'
     Expect 'pass' (Test-Path -LiteralPath (Join-Path (Join-Path $outRoot 'case-pass') 'ctest.log')) 'no ctest.log in the run folder'
+    # -PublishOffboard is only forwarded to px4-sitl.ps1's start (the default start above carries no such switch, and the stop call never does)
+    $r = Run 'offboard' 'case-offb' 0 0 0 $passBody @('-PublishOffboard')
+    Expect 'offboard' ($r.Code -eq 0) "exit $($r.Code): $($r.Text)"
+    Expect 'offboard' ($r.Calls -contains 'start case-offb 10.0.0.7 offboard') "the start did not carry -PublishOffboard: $($r.Calls -join ' / ')"
+    Expect 'offboard' (@($r.Calls | Where-Object { $_ -eq 'stop case-offb' }).Count -eq 1) 'the container was not stopped exactly once'
     # k10: the autopilot log's path is relative to the run folder; what ctest printed and wrote has the home folder redacted (and still has its line).
     $passFolder = Join-Path $outRoot 'case-pass'
     Expect 'k10' ($r.Summary -match '(?m)^autopilot log: px4-log\\2026-11-21\\px4\.ulg\r?$') "the autopilot log is not given relative to the run folder: $($r.Summary)"

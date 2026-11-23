@@ -162,6 +162,16 @@ exit 0
     Expect 'start network' ($runLine2 -match '--network none') "the run command carries --network none (got: $runLine2)"
     Expect 'start network' ($runLine -notmatch '--network') 'and the default start has no --network flag'
 
+    # start with -PublishOffboard: the run command publishes UDP 14580 (the port PX4 LISTENS on in the container) on the loopback only, and not
+    # 14540 (where PX4 SENDS, inside the container: publishing that carries nothing in); the default start publishes nothing
+    Remove-Item -LiteralPath $calls, $state -ErrorAction SilentlyContinue
+    $so = & $ps -NoProfile -ExecutionPolicy Bypass -File $script -RunId t1 -OutDir (Join-Path $work 'run-start3') -PublishOffboard -Docker $fake 2>&1 | ForEach-Object { "$_" }
+    $runLine3 = @(Get-Content -LiteralPath $calls | Where-Object { $_ -match '^run ' }) -join ' '
+    Expect 'start offboard' ($LASTEXITCODE -eq 0) "exit 0 (got $LASTEXITCODE): $($so -join ' ')"
+    Expect 'start offboard' ($runLine3 -match '-p 127\.0\.0\.1:14580:14580/udp') "the run command publishes 127.0.0.1:14580:14580/udp (got: $runLine3)"
+    Expect 'start offboard' ($runLine3 -notmatch '14540') "and not 14540 (got: $runLine3)"
+    Expect 'start offboard' ($runLine -notmatch '14580' -and $runLine -notmatch '127\.0\.0\.1:') 'and the default start publishes no port'
+
     # label: -Stop without -OutDir reads the run folder from the container's label (docker inspect ... json: no quotes inside the --format, which
     # Windows PowerShell 5.1 strips from a native command's arguments)
     $labelOut = Join-Path $work 'run-label'
