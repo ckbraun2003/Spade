@@ -32,6 +32,8 @@ struct Golden {
     Message message;
     const char* hex;
     size_t payload_len;  // as it is on the wire, after the zero truncation
+    uint8_t sysid = 1;   // the frame's source: ours (1/200), or PX4's own (1/1) for what it sends
+    uint8_t compid = 200;
 };
 
 std::vector<Golden> golden() {
@@ -128,6 +130,14 @@ std::vector<Golden> golden() {
                      "40720700640038ffd4fe000000000000000018fc84c7",
                      64});
     }
+    // COMMAND_ACK from PX4 (1/1) to the companion (1/191): pymavlink 2.4.49, tools/fc_link/golden/golden_gen_commands.py (network off, --pull never)
+    g.push_back({"command_ack_arm_accepted", 15, CommandAck{400, 0, 0, 0, 1, 191}, "fd0a00000f01014d0000900100000000000001bfc826", 10, 1, 1});
+    g.push_back({"command_ack_arm_temporarily_rejected", 16, CommandAck{400, 1, 0, 0, 1, 191}, "fd0a00001001014d0000900101000000000001bf8193", 10, 1, 1});
+    g.push_back({"command_ack_arm_denied", 17, CommandAck{400, 2, 0, 0, 1, 191}, "fd0a00001101014d0000900102000000000001bf8955", 10, 1, 1});
+    g.push_back({"command_ack_takeoff_accepted", 18, CommandAck{22, 0, 0, 0, 1, 191}, "fd0a00001201014d0000160000000000000001bf29b5", 10, 1, 1});
+    g.push_back({"command_ack_takeoff_temporarily_rejected", 19, CommandAck{22, 1, 0, 0, 1, 191}, "fd0a00001301014d0000160001000000000001bfdbe8", 10, 1, 1});
+    g.push_back({"command_ack_takeoff_denied", 20, CommandAck{22, 2, 0, 0, 1, 191}, "fd0a00001401014d0000160002000000000001bff14e", 10, 1, 1});
+    g.push_back({"command_ack_extension_fields", 21, CommandAck{22, 2, 255, -3, 1, 191}, "fd0a00001501014d0000160002fffdffffff01bf6bd8", 10, 1, 1});
     return g;
 }
 
@@ -154,7 +164,7 @@ TEST(FcLinkMavlink, TheCrcMatchesItsPublishedCheckValue) {
 
 TEST(FcLinkMavlink, EachMessageCarriesTheCrcExtraAndLengthTheReferenceUses) {
     struct Row { uint32_t id; uint8_t extra; size_t max_len; };
-    const Row rows[] = {{0, 50, 9}, {76, 152, 33}, {93, 47, 81}, {107, 108, 65}, {113, 124, 39}, {115, 4, 64}};
+    const Row rows[] = {{0, 50, 9}, {76, 152, 33}, {77, 143, 10}, {93, 47, 81}, {107, 108, 65}, {113, 124, 39}, {115, 4, 64}};
     for (const Row& r : rows) {
         ASSERT_TRUE(crc_extra(r.id).has_value()) << "message " << r.id;
         EXPECT_EQ(*crc_extra(r.id), r.extra) << "CRC_EXTRA of message " << r.id;
@@ -167,7 +177,7 @@ TEST(FcLinkMavlink, EachMessageCarriesTheCrcExtraAndLengthTheReferenceUses) {
 
 TEST(FcLinkMavlink, EncodingMakesTheReferencesBytes) {
     for (const Golden& g : golden()) {
-        const std::vector<uint8_t> got = encode(Header{g.seq, 1, 200}, g.message);
+        const std::vector<uint8_t> got = encode(Header{g.seq, g.sysid, g.compid}, g.message);
         EXPECT_EQ(got, from_hex(g.hex)) << g.name;
         ASSERT_GE(got.size(), kHeaderLen + kChecksumLen) << g.name;
         EXPECT_EQ(got[1], g.payload_len) << g.name << ": payload length after the trailing zeros are dropped";
@@ -202,7 +212,7 @@ TEST(FcLinkMavlink, ParsingTheReferencesBytesGivesBackTheMessages) {
             Parser::Stats stats;
             const std::vector<Frame> frames = parse_all(bytes, chunk, &stats);
             ASSERT_EQ(frames.size(), 1u) << g.name << " in chunks of " << chunk;
-            EXPECT_EQ(frames[0].header, (Header{g.seq, 1, 200})) << g.name;
+            EXPECT_EQ(frames[0].header, (Header{g.seq, g.sysid, g.compid})) << g.name;
             EXPECT_EQ(frames[0].msgid, msgid_of(g.message)) << g.name;
             EXPECT_EQ(frames[0].payload.size(), g.payload_len) << g.name << ": delivered as on the wire, not zero-filled";
             const spade::Result<Message> m = decode(frames[0]);

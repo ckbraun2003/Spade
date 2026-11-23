@@ -66,6 +66,7 @@ struct Def {
 constexpr Def kDefs[] = {
     {0, 50, 9},     // HEARTBEAT
     {76, 152, 33},  // COMMAND_LONG
+    {77, 143, 10},  // COMMAND_ACK
     {93, 47, 81},   // HIL_ACTUATOR_CONTROLS
     {107, 108, 65}, // HIL_SENSOR
     {113, 124, 39}, // HIL_GPS
@@ -92,6 +93,9 @@ void write_payload(Writer& w, const CommandLong& m) {
     w.put(m.target_system);            // @30
     w.put(m.target_component);         // @31
     w.put(m.confirmation);             // @32
+}
+void write_payload(Writer&, const CommandAck&) {
+    // RED: nothing written yet
 }
 void write_payload(Writer& w, const HilSensor& m) {
     w.put(m.time_usec);  // u64 @0
@@ -147,6 +151,7 @@ CommandLong read_command_long(Reader& r) {
     m.confirmation = r.get<uint8_t>();
     return m;
 }
+CommandAck read_command_ack(Reader&) { return CommandAck{}; }  // RED
 HilSensor read_hil_sensor(Reader& r) {
     HilSensor m;
     m.time_usec = r.get<uint64_t>();
@@ -256,6 +261,7 @@ uint32_t msgid_of(const Message& m) {
             using T = std::decay_t<decltype(v)>;
             if constexpr (std::is_same_v<T, Heartbeat>) return static_cast<uint32_t>(MsgId::heartbeat);
             else if constexpr (std::is_same_v<T, CommandLong>) return static_cast<uint32_t>(MsgId::command_long);
+            else if constexpr (std::is_same_v<T, CommandAck>) return static_cast<uint32_t>(MsgId::command_ack);
             else if constexpr (std::is_same_v<T, HilSensor>) return static_cast<uint32_t>(MsgId::hil_sensor);
             else if constexpr (std::is_same_v<T, HilGps>) return static_cast<uint32_t>(MsgId::hil_gps);
             else if constexpr (std::is_same_v<T, HilActuatorControls>) return static_cast<uint32_t>(MsgId::hil_actuator_controls);
@@ -303,6 +309,7 @@ Result<Message> decode(const Frame& frame) {
     switch (static_cast<MsgId>(frame.msgid)) {
         case MsgId::heartbeat: return Message{read_heartbeat(r)};
         case MsgId::command_long: return Message{read_command_long(r)};
+        case MsgId::command_ack: return Message{read_command_ack(r)};
         case MsgId::hil_actuator_controls: return Message{read_hil_actuator_controls(r)};
         case MsgId::hil_sensor: return Message{read_hil_sensor(r)};
         case MsgId::hil_gps: return Message{read_hil_gps(r)};
