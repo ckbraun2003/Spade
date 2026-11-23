@@ -96,6 +96,7 @@ inline constexpr double kGroundAmslM = 488.0;
 
     spade::sensors::BaroSensorSpawn baro;
     baro.rate_divider = kBaroDivider;
+    baro.world_origin_altitude_m = static_cast<float>(kGroundAmslM);  // the ground is 488 m above the ISA datum, as the GNSS says
     spade::sensors::MagSensorSpawn mag;
     mag.rate_divider = kMagDivider;
     mag.field_world_ut = glm::vec3(20.0f, -40.0f, 5.0f);
