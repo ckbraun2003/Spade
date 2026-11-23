@@ -59,7 +59,7 @@ if (-not $Stop) {
         exit 5
     }
     if ($OutDir) { $OutDir = [System.IO.Path]::GetFullPath($OutDir) }
-    $dockerArgs = @('run', '-d', '--name', $name, '--label', "spade.outdir=$OutDir",
+    $dockerArgs = @('run', '-d', '--pull', 'never', '--name', $name, '--label', "spade.outdir=$OutDir",
         '--add-host', 'host.docker.internal:host-gateway',
         '-e', "PX4_SYS_AUTOSTART=$Autostart",
         '-e', "PX4_SIM_HOSTNAME=$HostAddress",
