@@ -147,6 +147,56 @@ TEST(FcFlightWorld, TheBarometerAndMagnetometerGroupsReachHilSensorOnScheduleWit
     EXPECT_LE(mag_gap, 12000u) << "us between magnetometer groups, the worst of " << mag_at.size();
 }
 
+// ONE DATUM for everything the barometer sends (dry run 3 of 2026-11-23 sent the sea-level pressure beside a GNSS at 488 m: PX4 then read a 2 m climb as 2.07 m,
+// +0.099 m, because its published pressure was aligned to the GNSS's 488 m and converted the world's 12.01 Pa/m step at the 488 m density, 11.46 Pa/m). The boot
+// messages (Core's boot_readings) and the world's first ticks both read the barometer row, so they carry one datum; this pins that it is the ground's altitude, in
+// the pressure AND in the pressure_alt field, and that a climb's pressure step is the 488 m density's, which PX4 converts back to the height.
+TEST(FcFlightWorld, EveryPressureTheFlightWorldSendsIsAtTheGroundsAltitudeAndAClimbsStepIsThatDensitys) {
+    std::optional<FlightWorld> w = make_flight_world();
+    ASSERT_TRUE(w.has_value());
+    auto host = spade::fc_host::LockstepHost::open(w->sim, w->vehicle, w->bindings);
+    ASSERT_TRUE(host.has_value()) << host.error().context;
+    ASSERT_TRUE(w->model.model.propulsion.has_value());
+
+    // ISA at the ground, 488 m: P = 101325 (1 - 2.25577e-5 h)^5.25588 (95598 Pa); the centre of mass rests a fraction of a metre higher (about 2 Pa).
+    const double p_ground = 101325.0 * std::pow(1.0 - 2.25577e-5 * kGroundAmslM, 5.25588);
+    std::vector<double> pressure_pa, pressure_alt_m;
+    spade::fc_link::ExchangeConfig cfg;
+    cfg.chain = &*w->model.model.propulsion;
+    cfg.baro_binding = kBaroBinding;
+    cfg.mag_binding = kMagBinding;
+    cfg.boot = flight_boot_config();
+    auto link = spade::fc_link::AutopilotLink::create(
+        [&](const spade::fc_link::mavlink::HilSensor& m, const std::optional<spade::fc_link::mavlink::HilGps>&) -> spade::Result<spade::fc_link::ActuatorReply> {
+            pressure_pa.push_back(static_cast<double>(m.abs_pressure) * 100.0);
+            pressure_alt_m.push_back(static_cast<double>(m.pressure_alt));
+            spade::fc_link::ActuatorReply r;
+            r.lockstep = true;
+            return r;  // not armed, no motors: the vehicle rests on its feet
+        },
+        cfg);
+    ASSERT_TRUE(link.has_value()) << link.error().context;
+    for (int i = 0; i < 400; ++i) {  // the boot messages and 1.6 s of the world
+        const auto step = link->exchange(*host);
+        ASSERT_TRUE(step.has_value()) << "exchange " << i << ": " << step.error().context;
+    }
+    ASSERT_GE(pressure_pa.size(), 400u);
+    const auto [lo, hi] = std::minmax_element(pressure_pa.begin(), pressure_pa.end());
+    EXPECT_NEAR(*lo, p_ground, 25.0) << "the lowest pressure sent (Pa): the ground's altitude is the datum, 95598 Pa (boot messages and ticks alike)";
+    EXPECT_NEAR(*hi, p_ground, 25.0) << "the highest pressure sent (Pa)";
+    const auto [alt_lo, alt_hi] = std::minmax_element(pressure_alt_m.begin(), pressure_alt_m.end());
+    EXPECT_NEAR(*alt_lo, kGroundAmslM, 3.0) << "pressure_alt (m) of the same messages";
+    EXPECT_NEAR(*alt_hi, kGroundAmslM, 3.0);
+
+    // A climb's step: the sensor 2 m higher reads 2 m x the 488 m air density x g less (11.46 Pa/m), not the sea-level 12.01 Pa/m.
+    const double rho_g = 11.4601;  // Pa/m at 488 m, ISA (the engine's own baro_truth is pinned by test_baro.cpp)
+    const auto at_rest = spade::sensors::baro_truth(static_cast<float>(kGroundAmslM), 101325.0f, 288.15f, 0.0065f);
+    const auto lifted = spade::sensors::baro_truth(static_cast<float>(kGroundAmslM) + 2.0f, 101325.0f, 288.15f, 0.0065f);
+    EXPECT_NEAR(at_rest.pressure_pa - lifted.pressure_pa, 2.0 * rho_g, 0.15) << "Pa for 2 m at the ground's altitude";
+    EXPECT_GT(at_rest.pressure_pa - lifted.pressure_pa, 22.5) << "and not the sea-level step of 24.0 Pa";
+    EXPECT_LT(at_rest.pressure_pa - lifted.pressure_pa, 23.5);
+}
+
 // One source for the kit's sensor figures: the flight world's barometer and magnetometer noise are the kit profile's white sigmas, not numbers of their own.
 TEST(FcFlightWorld, TheBarometerAndMagnetometerNoiseAreTheKitProfilesWhiteSigmas) {
     const auto kit = spade::fc_link::sensor_set(spade::fc_link::SensorProfile::kit, kDtNs, glm::vec3(20.0f, -40.0f, 5.0f), static_cast<float>(kGroundAmslM));
