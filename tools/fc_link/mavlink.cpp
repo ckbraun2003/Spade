@@ -94,8 +94,13 @@ void write_payload(Writer& w, const CommandLong& m) {
     w.put(m.target_component);         // @31
     w.put(m.confirmation);             // @32
 }
-void write_payload(Writer&, const CommandAck&) {
-    // RED: nothing written yet
+void write_payload(Writer& w, const CommandAck& m) {
+    w.put(m.command);           // u16 @0
+    w.put(m.result);            // @2
+    w.put(m.progress);          // @3 (extension)
+    w.put(m.result_param2);     // i32 @4 (extension)
+    w.put(m.target_system);     // @8 (extension)
+    w.put(m.target_component);  // @9 (extension)
 }
 void write_payload(Writer& w, const HilSensor& m) {
     w.put(m.time_usec);  // u64 @0
@@ -151,7 +156,16 @@ CommandLong read_command_long(Reader& r) {
     m.confirmation = r.get<uint8_t>();
     return m;
 }
-CommandAck read_command_ack(Reader&) { return CommandAck{}; }  // RED
+CommandAck read_command_ack(Reader& r) {
+    CommandAck m;
+    m.command = r.get<uint16_t>();
+    m.result = r.get<uint8_t>();
+    m.progress = r.get<uint8_t>();
+    m.result_param2 = r.get<int32_t>();
+    m.target_system = r.get<uint8_t>();
+    m.target_component = r.get<uint8_t>();
+    return m;
+}
 HilSensor read_hil_sensor(Reader& r) {
     HilSensor m;
     m.time_usec = r.get<uint64_t>();
