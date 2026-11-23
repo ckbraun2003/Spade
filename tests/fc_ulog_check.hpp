@@ -32,12 +32,15 @@
 // A detail never quotes the file's bytes (a key, a value, a string): it names a byte offset, a message type and a size.
 // ---------------------------------------------------------------------------
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <map>
+#include <numeric>
 #include <set>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace spade::fc {
 
@@ -78,6 +81,21 @@ struct UlogResult {
         float f = 0.0F;
     };
     std::map<std::string, Param> params;
+    // The sample cadence: per subscription (one topic instance), the nonzero stamps of its timed data messages, in file order. `gcd_us` is the
+    // greatest common divisor of the gaps between consecutive stamps, so every gap is a multiple of a step exactly when gcd_us is.
+    struct Stream {
+        std::string name;        // the format's name
+        uint8_t multi_id = 0;    // the subscription's instance
+        uint64_t n = 0;          // samples (nonzero stamps)
+        uint64_t first_us = 0;
+        uint64_t last_us = 0;
+        uint64_t gcd_us = 0;     // 0 until two samples
+        uint64_t min_gap_us = ~uint64_t{0};
+        uint64_t max_gap_us = 0;
+        bool monotone = true;    // no stamp earlier than the one before it
+        uint64_t repeats = 0;    // gaps of 0 (a stamp repeated)
+    };
+    std::vector<Stream> streams;
 };
 
 namespace ulog_detail {
@@ -142,6 +160,8 @@ namespace ulog_detail {
     std::map<std::string, bool> timed;                 // format name -> its first field is `uint64_t timestamp`
     std::map<uint16_t, std::string> subscribed_name;   // message id -> format name
     std::map<std::string, uint64_t> zero_by_format;
+    std::map<uint16_t, uint8_t> subscribed_multi;
+    std::map<uint16_t, UlogResult::Stream> stream_of;
     r.header_start_us = rd64(b, 8);
     while (pos < b.size()) {
         if (b.size() - pos < 3) return bad("a message header is cut off by the end of the file", pos);
@@ -239,6 +259,7 @@ namespace ulog_detail {
                 if (subscribed.count(id) != 0) return bad("message id " + std::to_string(id) + " is subscribed twice", pos);
                 subscribed[id] = true;
                 subscribed_name[id] = std::string(m.substr(3));
+                subscribed_multi[id] = static_cast<uint8_t>(m[0]);
                 ++r.subscriptions;
                 break;
             }
@@ -266,6 +287,22 @@ namespace ulog_detail {
                     if (!r.has_time || ts < r.first_stamp_us) r.first_stamp_us = ts;
                     if (!r.has_time || ts > r.last_stamp_us) r.last_stamp_us = ts;
                     r.has_time = true;
+                    UlogResult::Stream& st = stream_of[id];
+                    if (st.n == 0) {
+                        st.name = fname;
+                        st.multi_id = subscribed_multi[id];
+                        st.first_us = ts;
+                    } else if (ts < st.last_us) {
+                        st.monotone = false;
+                    } else {
+                        const uint64_t gap = ts - st.last_us;
+                        if (gap == 0) ++st.repeats;
+                        st.gcd_us = std::gcd(st.gcd_us, gap);
+                        st.min_gap_us = std::min(st.min_gap_us, gap);
+                        st.max_gap_us = std::max(st.max_gap_us, gap);
+                    }
+                    if (st.n == 0 || ts >= st.last_us) st.last_us = ts;
+                    ++st.n;
                 }
                 break;
             }
@@ -293,6 +330,7 @@ namespace ulog_detail {
     }
     if (first) return bad("the file holds no messages after the header", 16);
     if (r.data_messages == 0) return bad("the log holds no data message", b.size());
+    for (auto& [id, st] : stream_of) r.streams.push_back(st);
     for (const auto& [name, n] : zero_by_format) r.zero_formats += (r.zero_formats.empty() ? "" : ", ") + name + " " + std::to_string(n);
     if (r.unknown_messages > 0) {
         r.kind = UlogResult::Kind::unread;

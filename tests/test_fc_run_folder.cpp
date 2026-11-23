@@ -154,7 +154,7 @@ TEST(FcRunFolder, TheGoodBudgetFolderPassesEveryImplementedCheckAndNamesWhatIsUn
         EXPECT_NE(c.verdict, Verdict::fail) << c.id << ": " << c.detail;
         EXPECT_NE(c.verdict, Verdict::absent) << c.id << ": " << c.detail;
     }
-    EXPECT_EQ(unchecked, (std::set<std::string>{"K4.log", "K4.span", "K4.firmware", "K4.params", "K6.recount", "K11.replay"})) << r.text();
+    EXPECT_EQ(unchecked, (std::set<std::string>{"K4.log", "K4.span", "K4.firmware", "K4.params", "K4.cadence", "K6.recount", "K11.replay"})) << r.text();
     for (const char* id : {"K1", "K2", "K3", "K5", "K6", "K7", "K9", "K10"}) {
         const auto* c = r.find(id, Verdict::pass);
         EXPECT_NE(c, nullptr) << id << " has no passing result\n" << r.text();
@@ -677,7 +677,7 @@ TEST(FcRunFolder, TheTraceAndCommandsOfCoresSampleRunAreRecomputedAndAgree) {
     std::set<std::string> unchecked;
     for (const auto& c : r.results)
         if (c.verdict == Verdict::unchecked) unchecked.insert(c.id);
-    EXPECT_EQ(unchecked, (std::set<std::string>{"K4.log", "K4.span", "K4.firmware", "K4.params", "K6.recount", "K11.replay"}));
+    EXPECT_EQ(unchecked, (std::set<std::string>{"K4.log", "K4.span", "K4.firmware", "K4.params", "K4.cadence", "K6.recount", "K11.replay"}));
 }
 
 TEST(FcRunFolder, TheLoaderReadsAFolderFromDiskAndTheVerdictIsTheSame) {
@@ -1142,6 +1142,80 @@ TEST(FcRunFolder, K4_TheAirframeFilesParameterLinesAreRead) {
     EXPECT_FALSE(spade::fc::plain_number(""));
 }
 
+// K4.cadence: the IMU stream (`sensor_combined`, instance 0) must run on the lockstep clock: every gap between its stamps a multiple of the link step.
+// A gap of more than one step is a sample the log does not hold: counted and printed, not judged (see the commit message: the two real runs hold ~95%).
+namespace {
+
+[[nodiscard]] std::vector<ux::Msg> imu_log(const std::vector<uint64_t>& stamps, uint8_t multi = 0) {
+    using namespace ux;
+    std::vector<Msg> v = good_messages();
+    v.insert(v.begin() + kFStatus + 1, Msg{'F', "sensor_combined:uint64_t timestamp;float[3] gyro_rad;"});
+    std::string a(1, static_cast<char>(multi));
+    put16(a, 5);
+    a += "sensor_combined";
+    v.insert(v.begin() + kSubStatus + 1, Msg{'A', a});
+    for (const uint64_t t : stamps) v.push_back({'D', timed_d(5, t, 12)});
+    return v;
+}
+
+[[nodiscard]] std::pair<Verdict, std::string> cadence_of(const std::vector<ux::Msg>& v, std::optional<uint64_t> step = 4000) {
+    const Report r = spade::fc::check_run_folder(spade::fc::RunFolder{good_measured(), ux::assemble(v), std::nullopt, std::nullopt, step});
+    const auto* c = result_of(r, "K4.cadence");
+    return c != nullptr ? std::make_pair(c->verdict, c->detail) : std::make_pair(Verdict::absent, std::string("no K4.cadence row"));
+}
+
+}  // namespace
+
+TEST(FcRunFolder, K4_TheImuStreamsGapsAreMultiplesOfTheLinkStepAndMissingStepsAreCounted) {
+    const std::vector<ux::Msg> v = imu_log({4000, 8000, 12000, 20000, 24000});
+    const UlogResult read = read_msgs(v);
+    ASSERT_EQ(read.kind, UlogResult::Kind::well_formed) << read.detail;
+    const UlogResult::Stream* imu = nullptr;
+    for (const auto& s : read.streams)
+        if (s.name == "sensor_combined") imu = &s;
+    ASSERT_NE(imu, nullptr);
+    EXPECT_EQ(imu->n, 5u);
+    EXPECT_EQ(imu->first_us, 4000u);
+    EXPECT_EQ(imu->last_us, 24000u);
+    EXPECT_EQ(imu->gcd_us, 4000u);
+    EXPECT_EQ(imu->min_gap_us, 4000u);
+    EXPECT_EQ(imu->max_gap_us, 8000u);
+    EXPECT_TRUE(imu->monotone);
+
+    const auto r = cadence_of(v);
+    EXPECT_EQ(r.first, Verdict::pass) << r.second;
+    EXPECT_NE(r.second.find("sensor_combined 5 samples, stamps 4000 to 24000 us, gaps 4000 to 8000 us; 1 of 6 link steps have no logged sample"), std::string::npos) << r.second;
+    EXPECT_EQ(cadence_of(imu_log({0, 4000, 8000})).first, Verdict::pass) << "a stamp of 0 is not a sample";
+    EXPECT_EQ(cadence_of(imu_log({4000, 8000}), 2000).first, Verdict::pass) << "the step is the caller's";
+}
+
+TEST(FcRunFolder, K4_TheImuStreamFailsWhenOffTheClockBackwardsOrRepeated) {
+    auto r = cadence_of(imu_log({4000, 8000, 12001}));
+    EXPECT_EQ(r.first, Verdict::fail);
+    EXPECT_NE(r.second.find("not all multiples of the 4000 us link step (their greatest common divisor is 1 us)"), std::string::npos) << r.second;
+    r = cadence_of(imu_log({4000, 6000, 10000}));
+    EXPECT_EQ(r.first, Verdict::fail) << "2000 is not a multiple of 4000: " << r.second;
+    r = cadence_of(imu_log({4000, 12000, 8000}));
+    EXPECT_EQ(r.first, Verdict::fail);
+    EXPECT_NE(r.second.find("earlier than the one before"), std::string::npos) << r.second;
+    r = cadence_of(imu_log({4000, 4000, 8000}));
+    EXPECT_EQ(r.first, Verdict::fail);
+    EXPECT_NE(r.second.find("1 sensor_combined stamps repeat"), std::string::npos) << r.second;
+}
+
+TEST(FcRunFolder, K4_TheCadenceIsUncheckedWhenItCannotBeRead) {
+    EXPECT_EQ(cadence_of(imu_log({4000, 8000}), std::nullopt).first, Verdict::unchecked) << "no link step given";
+    EXPECT_EQ(cadence_of(imu_log({4000, 8000}), 0).first, Verdict::unchecked) << "a step of 0";
+    EXPECT_EQ(cadence_of(imu_log({4000})).first, Verdict::unchecked) << "one sample has no gap";
+    EXPECT_EQ(cadence_of(ux::good_messages()).first, Verdict::unchecked) << "the log holds no sensor_combined";
+    EXPECT_EQ(cadence_of(imu_log({4000, 8000}, 1)).first, Verdict::unchecked) << "only instance 1 is there; instance 0 is read";
+    std::vector<ux::Msg> unknown = imu_log({4000, 8000});
+    unknown.insert(unknown.begin() + ux::kSubGyro, ux::Msg{'Z', "x"});
+    EXPECT_EQ(cadence_of(unknown).first, Verdict::unchecked) << "an unread log's samples are not read";
+    const Report none = spade::fc::check_run_folder(spade::fc::RunFolder{good_measured()});
+    EXPECT_NE(none.find("K4.cadence", Verdict::unchecked), nullptr) << none.text();
+}
+
 // A real PX4 log: SPADE_FC_ULOG names a .ulg file (for example one a live fc run left in px4-log/); unset, the case skips by name, so the 12 MB logs of
 // the live runs are never committed. It checks the reader against the real thing, including the message types and sizes the spec page extract lacked.
 TEST(FcRunFolder, TheRealPx4LogIsWellFormed) {
@@ -1193,7 +1267,7 @@ TEST(FcRunFolder, TheRealPx4LogCoversTheRunsSimulatedTime) {
         airframe.assign((std::istreambuf_iterator<char>(ain)), std::istreambuf_iterator<char>());
     }
     const Report folder = spade::fc::check_run_folder(
-        spade::fc::RunFolder{good_measured(), log, sim, airframe_path.empty() ? std::nullopt : std::optional<std::string>(airframe)});
+        spade::fc::RunFolder{good_measured(), log, sim, airframe_path.empty() ? std::nullopt : std::optional<std::string>(airframe), 4000});
     const auto* span = span_of(folder);
     ASSERT_NE(span, nullptr);
     std::cout << "K4.span: " << span->detail << "\n";
@@ -1202,6 +1276,10 @@ TEST(FcRunFolder, TheRealPx4LogCoversTheRunsSimulatedTime) {
     ASSERT_NE(fw, nullptr);
     std::cout << "K4.firmware: " << fw->detail << "\n";
     EXPECT_EQ(fw->verdict, Verdict::pass) << fw->detail;
+    const auto* cad = result_of(folder, "K4.cadence");
+    ASSERT_NE(cad, nullptr);
+    std::cout << "K4.cadence: " << cad->detail << "\n";
+    EXPECT_EQ(cad->verdict, Verdict::pass) << cad->detail;
     const auto* params = result_of(folder, "K4.params");
     ASSERT_NE(params, nullptr);
     std::cout << "K4.params: " << static_cast<int>(params->verdict) << " " << params->detail << "\n";

@@ -97,18 +97,24 @@ struct RunFolder {
     // The airframe file the run was given (tools/fc_link/px4/airframes/<n>_..., the file the image holds), as text: with it K4.params compares the
     // log's parameters to the file's `param set-default` lines. It is not in the record either; with none K4.params stays unchecked.
     std::optional<std::string> airframe_file;
+    // The run's link step in microseconds (the period of the lockstep clock: 4,000 in the live test, `s.time_usec = k * 4000`). With it K4.cadence
+    // checks that the IMU stream's gaps are multiples of it; with none K4.cadence stays unchecked.
+    std::optional<uint64_t> link_step_us;
 
     // Constructors, not aggregate initialisation: gcc's -Werror=missing-field-initializers refuses `RunFolder{files}` with the log left out.
     RunFolder() = default;
     RunFolder(Files f, std::optional<std::string> log = std::nullopt, std::optional<uint64_t> sim_us = std::nullopt,
-              std::optional<std::string> airframe = std::nullopt)
-        : files(std::move(f)), autopilot_log(std::move(log)), simulated_time_us(sim_us), airframe_file(std::move(airframe)) {}
+              std::optional<std::string> airframe = std::nullopt, std::optional<uint64_t> step_us = std::nullopt)
+        : files(std::move(f)), autopilot_log(std::move(log)), simulated_time_us(sim_us), airframe_file(std::move(airframe)), link_step_us(step_us) {}
 };
 
 // The firmware the run is pinned to: PX4 v1.17.0, commit d6f12ad1c4f70ad3230afd7d86e971421e02fef4 (tools/fc_link/px4/Dockerfile:3 and the fc-links plan).
 // The log's `ver_sw_release` is PX4's own 0xMMmmPPtt (major 1, minor 0x11 = 17, patch 0, type 0xFF = release): read from the two real logs.
 inline constexpr std::string_view kPinnedPx4Commit = "d6f12ad1c4f70ad3230afd7d86e971421e02fef4";
 inline constexpr uint32_t kPinnedPx4Release = 0x011100FF;
+
+// The IMU stream whose cadence K4.cadence reads: PX4's `sensor_combined`, instance 0 (the topic the lockstep's HIL_SENSOR feeds, once per link step).
+inline constexpr std::string_view kCadenceTopic = "sensor_combined";
 
 // "1.17.0 (release)" from a ver_sw_release value.
 [[nodiscard]] inline std::string release_text(uint32_t v) {
@@ -619,6 +625,7 @@ inline Report check_run_folder(const RunFolder& folder) {
         if (u.kind != UlogResult::Kind::well_formed) {
             add("K4.firmware", Verdict::unchecked, "the log was not read to its end, so its version was not read");
             add("K4.params", Verdict::unchecked, "the log was not read to its end, so its parameters were not read");
+            add("K4.cadence", Verdict::unchecked, "the log was not read to its end, so its samples were not read");
         } else {
             const bool hex40 = u.ver_sw.size() == 40 && std::all_of(u.ver_sw.begin(), u.ver_sw.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
             if (!u.has_ver_sw || !u.has_ver_sw_release) {
@@ -633,6 +640,32 @@ inline Report check_run_folder(const RunFolder& folder) {
                 add("K4.firmware", Verdict::pass, "PX4 " + release_text(u.ver_sw_release) + ", commit " + u.ver_sw.substr(0, 8) + " = the pinned v1.17.0");
             }
 
+            {
+                const UlogResult::Stream* imu = nullptr;
+                for (const UlogResult::Stream& s : u.streams)
+                    if (s.name == kCadenceTopic && s.multi_id == 0) imu = &s;
+                if (!folder.link_step_us.has_value() || *folder.link_step_us == 0) {
+                    add("K4.cadence", Verdict::unchecked, "no link step was given to the checker (the lockstep clock's period)");
+                } else if (imu == nullptr || imu->n < 2) {
+                    add("K4.cadence", Verdict::unchecked, "the log holds fewer than two " + std::string(kCadenceTopic) + " samples, so there is no cadence to read");
+                } else {
+                    const uint64_t step = *folder.link_step_us;
+                    const uint64_t expected = (imu->last_us - imu->first_us) / step + 1;
+                    const uint64_t missing = expected > imu->n ? expected - imu->n : 0;
+                    const std::string facts = std::string(kCadenceTopic) + " " + std::to_string(imu->n) + " samples, stamps " + std::to_string(imu->first_us) + " to " +
+                                              std::to_string(imu->last_us) + " us, gaps " + std::to_string(imu->min_gap_us) + " to " + std::to_string(imu->max_gap_us) +
+                                              " us; " + std::to_string(missing) + " of " + std::to_string(expected) + " link steps have no logged sample";
+                    if (!imu->monotone) {
+                        add("K4.cadence", Verdict::fail, "a " + std::string(kCadenceTopic) + " stamp is earlier than the one before it: " + facts);
+                    } else if (imu->repeats > 0) {
+                        add("K4.cadence", Verdict::fail, std::to_string(imu->repeats) + " " + std::string(kCadenceTopic) + " stamps repeat the one before: " + facts);
+                    } else if (imu->gcd_us % step != 0) {
+                        add("K4.cadence", Verdict::fail, "the gaps are not all multiples of the " + std::to_string(step) + " us link step (their greatest common divisor is " + std::to_string(imu->gcd_us) + " us): " + facts);
+                    } else {
+                        add("K4.cadence", Verdict::pass, "every gap is a multiple of the " + std::to_string(step) + " us link step (a gap of more than one step is a sample the log does not hold, counted below, not judged): " + facts);
+                    }
+                }
+            }
             if (!folder.airframe_file.has_value()) {
                 add("K4.params", Verdict::unchecked, "no airframe file was given to the checker (the file the image holds; it is not in the record)");
             } else {
@@ -693,6 +726,7 @@ inline Report check_run_folder(const RunFolder& folder) {
         add("K4.span", Verdict::unchecked, "no autopilot log was given to the checker");
         add("K4.firmware", Verdict::unchecked, "no autopilot log was given to the checker");
         add("K4.params", Verdict::unchecked, "no autopilot log was given to the checker");
+        add("K4.cadence", Verdict::unchecked, "no autopilot log was given to the checker");
     }
 
     // K5: the copies match their hashes; the mode is one of two; a measured run names its box and tree.
