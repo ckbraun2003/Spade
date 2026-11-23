@@ -19,6 +19,7 @@
 #include "render/camera_lens.hpp"
 #include "render/ray_scene.hpp"
 #include "render/scene.hpp"
+#include "unique_temp.hpp"
 
 namespace cf = camera_frames;
 namespace rd = spade::render;
@@ -359,9 +360,8 @@ TEST(CameraFramesTool, ABothLensViewOfAWallHasTheWallInTheMiddleOfEach) {
 }
 
 TEST(CameraFramesTool, TheFilesAreWrittenByTheirNames) {
-    const fs::path dir = fs::temp_directory_path() / "spade_camera_frames_test" / "nested";
-    std::error_code ec;
-    fs::remove_all(dir.parent_path(), ec);
+    const spade::test::TempDir temp("camera_frames_test");  // a folder no other run shares; removed when the test ends
+    const fs::path dir = temp.path() / "nested";
     cf::Options o;
     o.width = 4;
     o.height = 3;
@@ -391,5 +391,4 @@ TEST(CameraFramesTool, TheFilesAreWrittenByTheirNames) {
     ASSERT_EQ(with->size(), 4u);
     EXPECT_EQ(fs::path((*with)[2]).filename().string(), "shot_pinhole_instances.png");
     EXPECT_EQ(fs::path((*with)[3]).filename().string(), "shot_fisheye_instances.png");
-    fs::remove_all(dir.parent_path(), ec);
 }
