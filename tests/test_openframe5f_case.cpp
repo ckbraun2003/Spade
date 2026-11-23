@@ -244,8 +244,11 @@ TEST(OpenFrame5fProp, TheBladeIsTheMit5x4AndItIsGradedAStandIn) {
     const auto base = sc::prop_from_yaml(base_text);
     ASSERT_TRUE(base.has_value());
     ASSERT_TRUE(part->blade.has_value() && base->blade.has_value());
-    EXPECT_EQ(part->blade->alpha_0_deg, base->blade->alpha_0_deg) << "the fitted polar is the library's";
-    EXPECT_EQ(part->blade->cd_scale, base->blade->cd_scale);
+    EXPECT_EQ(part->blade->alpha_0_deg, of::kFilmAlpha0Deg) << "the polar is the film's own fit (polar C), not the library's";
+    EXPECT_EQ(part->blade->cd_scale, of::kFilmCdScale);
+    EXPECT_EQ(part->blade->fit_kernel_cells, of::kFilmFitKernelCells) << "and declares the kernel it was fitted at";
+    EXPECT_NE(part->blade->cd_scale, base->blade->cd_scale) << "the library's fit for this propeller is another fit";
+    EXPECT_EQ(part->blade->r_over_r, base->blade->r_over_r) << "the geometry is the library's";
     EXPECT_EQ(part->block.ct_table, base->block.ct_table);
     EXPECT_NE(of::kPropCaveat.find("6,057 rpm"), std::string_view::npos) << "the card's caveat line names the fit point";
 }

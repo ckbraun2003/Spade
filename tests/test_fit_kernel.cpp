@@ -51,6 +51,16 @@ namespace fits = spade::test::library_polar_fits;
     return fits::kFits[0];
 }
 
+// The film's own polar (polar C, chosen 2026-11-23 over polar E by the owner's chain; the fix 3 record): the 5x4 three-blade fitted at
+// the film's cell (R/dx 51, a 3.70 mm = 2.97-cell kernel), two-speed compromise, verified at 6,057 rpm. It is the film's OWN fit, not a
+// copy of the library 5x4's (2.2885, 2.83 cells). ONE table: the film's part file, its notes and its model header are held to it.
+struct FilmPolar {
+    double alpha_0_deg;
+    double cd_scale;
+    double fit_kernel_cells;
+};
+constexpr FilmPolar kFilmPolar{-4.3344, 2.0, 2.97};
+
 [[nodiscard]] sc::PropPart prop_of(const fs::path& file) {
     const auto part = sc::prop_from_yaml(read_all(file));
     EXPECT_TRUE(part.has_value()) << file.string() << ": " << (part ? "" : part.error().context);
@@ -232,6 +242,36 @@ TEST(FitKernel, TheCopiesOfTheApce10x5sPolarAgreeAndDeclareItsKernel) {
     // a hand-written test's sample value is the table's, so a re-fit that moves the table is noticed here too
     EXPECT_TRUE(contains(read_all(repo("tests/test_part_file.cpp")), "alpha_0_deg: -3.0645\\n")) << "tests/test_part_file.cpp's sample is the 10x5's";
     EXPECT_EQ(f.alpha_0_deg, -3.0645);
+}
+
+// The film's copy is the film's OWN fit (O207): its part file, its notes and its model header all say the one table above.
+TEST(FitKernel, TheFilmsPolarIsOneTableAcrossItsFiles) {
+    const sc::PropPart p = prop_of(repo("tools/flow_movie/data/openframe5f/parts/openframe5f_5in_mit5x4.prop.yaml"));
+    ASSERT_TRUE(p.blade.has_value() && p.blade->alpha_0_deg.has_value());
+    EXPECT_EQ(*p.blade->alpha_0_deg, kFilmPolar.alpha_0_deg);
+    EXPECT_EQ(*p.blade->cd_scale, kFilmPolar.cd_scale);
+    ASSERT_TRUE(p.blade->fit_kernel_cells.has_value()) << "the film's polar declares the kernel it was fitted at";
+    EXPECT_EQ(*p.blade->fit_kernel_cells, kFilmPolar.fit_kernel_cells);
+    const std::string notes = read_all(repo("tools/flow_movie/data/openframe5f/openframe5f.notes.yaml"));
+    const std::string model = read_all(repo("tests/openframe5f_model.hpp"));
+    for (const std::string* text : {&notes, &model}) {
+        EXPECT_FALSE(contains(*text, "2.2885")) << "the library's drag scale is not the film's now";
+        EXPECT_FALSE(contains(*text, "2.83 cells")) << "the library's kernel is not the film's now";
+        EXPECT_TRUE(contains(*text, "cd_scale 2.0") || contains(*text, "drag scale 2.0")) << "the film's drag scale is named";
+        EXPECT_TRUE(contains(*text, "2.97")) << "the film's kernel in cells is named";
+    }
+}
+
+// The library's 5x4 and the film's copy are different fits of one prop on purpose: the geometry and the tables are the same, the polars not.
+TEST(FitKernel, TheFilmAndTheLibraryShareTheTablesNotThePolar) {
+    const sc::PropPart lib = library_5x4();
+    const sc::PropPart film = prop_of(repo("tools/flow_movie/data/openframe5f/parts/openframe5f_5in_mit5x4.prop.yaml"));
+    EXPECT_EQ(film.blade->r_over_r, lib.blade->r_over_r);
+    EXPECT_EQ(film.blade->c_over_r, lib.blade->c_over_r);
+    EXPECT_EQ(film.blade->beta_deg, lib.blade->beta_deg);
+    EXPECT_EQ(film.block.ct_table, lib.block.ct_table);
+    EXPECT_NE(*film.blade->cd_scale, *lib.blade->cd_scale);
+    EXPECT_NE(*film.blade->fit_kernel_cells, *lib.blade->fit_kernel_cells);
 }
 
 // What the agreement test does NOT hold, and why (the lead's ruling: dated records are history). These quote a polar's numbers as they
