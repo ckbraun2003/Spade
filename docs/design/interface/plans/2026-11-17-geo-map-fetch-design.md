@@ -144,7 +144,7 @@ fetched_utc: 2026-11-17T01:23:45Z
 
 ## 5. Heights: NAVD88 to the ellipsoid
 
-3DEP heights are orthometric, NAVD88 in the conterminous US (**to be confirmed against the service's metadata in the live check**). GNSS heights are above the ellipsoid. The relation is
+3DEP heights are orthometric, NAVD88 in the conterminous US (confirmed from USGS's published documentation, not from the service's own metadata: see "The datum" below). GNSS heights are above the ellipsoid. The relation is
 
 ```
 h (ellipsoid) = H (NAVD88) + N
@@ -153,6 +153,8 @@ h (ellipsoid) = H (NAVD88) + N
 with `N` the geoid height from NOAA NGS at the anchor (GEOID18; over the US it is negative, tens of metres). Over 1 km `N` changes by under 1 cm (KAT's design), so one value serves the whole area: the tool adds `N` to every elevation sample before writing `height.f32`, stores `N` in the georef, and reports the anchor's ground height `anchor_ellipsoid_height_m` = the grid sampled at the anchor (bilinear) + N. The scene's anchor height is that value.
 
 **Flagged, an accepted error the lead may want written into the design:** GEOID18's ellipsoid is NAD83(2011), not WGS84. The two ellipsoid heights differ by up to about 1 to 2 m over the US, a smooth offset that cannot be told from a constant over 1 km. I would do nothing about it: it moves the whole map, not the ground relative to the drone, and the anchor height comes from the same map, so a drone above the map sees consistent heights. A GNSS height checked against a surveyed WGS84 point would be off by that offset. I record it and add no correction.
+
+**The datum (live check (ii), read 2026-11-22; HTML pages only, nothing fetched from a service).** USGS's 3DEP FAQ on projection, horizontal and vertical datum and resolution (usgs.gov, `faqs/what-are-projection-horizontal-and-vertical-datum-and-resolution-3d-elevation-program-3dep`) says the 3DEP DEMs are NAVD88 over the conterminous United States, and that Hawaii, Puerto Rico, the US Virgin Islands and the Pacific territories are on local mean sea level. A USGS checkpoint dataset lists Alaska and Hawaii as converted with GEOID12B, not GEOID18. NOAA NGS's GEOID18 covers the conterminous United States, Puerto Rico and the US Virgin Islands (NOAA Technical Report NOS NGS 72), but Puerto Rico and the USVI elevations are on PRVD02 and VIVD09, not NAVD88. So `h = H + N` is right only where the elevation is NAVD88 and GEOID18 is defined, the conterminous United States, and the tool now refuses anywhere else by name before any request (`height_model_refusal`, `area.hpp`). The box is 24 to 58 N and 130 to 60 W, the conterminous extent NGS lists on its DEFLEC18 page: a proxy, because the search did not return GEOID18's own extent. A point in Canada, Mexico or the Bahamas inside the box passes the check and is refused after a request by 3DEP's no-data answer; `--help` and the README say so. The service's own metadata was not read.
 
 ## 6. The HTTP layer (a tester's PC has no Python)
 
@@ -236,6 +238,16 @@ The two pieces that touch the OS (WinHTTP, libcurl) have no unit test: a thin fi
 - Georef box against the radii of curvature written out independently: within 1.8e-9 degrees (0.2 mm), so the V5 check passes.
 - Heights, ellipsoid metres over the 1 km square: 1266.78 to 1268.32 (max minus min 1.54 m), mean 1266.99, standard deviation 0.12 m, 1st-to-99th percentile range 0.82 m. V4's under-1 m passes as a percentile range; max minus min does not, which is why the check is written as one.
 - The run took 15 s and received 6.45 MB (208 bytes of geoid, 4.20 MB of elevation, 2.26 MB of image).
+
+**Live check (i): the cell edge (L85h, 2026-11-22, Oversight's word relayed by the lead; run by hand as two ticketed jobs).** Two 200 m boxes inside the L85f Bonneville area, the second shifted by one cell (1 m east), the same three services and the same endpoints as L85f and L85g, nothing new:
+
+- hosts and paths: `https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage` (USGS 3DEP), `https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer/exportImage` (USGS NAIP), `https://geodesy.noaa.gov/api/geoid/ght?...&model=14` (NOAA NGS, GEOID18);
+- run A: `spade_geo_fetch --lat 40.76 --lon -113.90 --side 200`, key `n40760000_w113900000_s200`, box west -113.901184278058, south 40.759099498751894, east -113.89881572194201, north 40.760900501107116; received 208 B geoid, 263,000 B elevation, 123,196 B image = 386,404 B;
+- run B: the same with `--lon -113.899988157` (one metre east at 40.76 N: 84,439.6 m per degree of longitude, from the WGS84 radius of curvature), key `n40760000_w113899988_s200`, box west -113.90117243505799, east -113.898803878942, the same south and north; received 216 B, 263,000 B, 122,725 B = 385,941 B;
+- total received 772,345 B (under 1 MB); both stored to a throw-away cache folder in the session scratchpad (outside every git tree), which was deleted after this record was written; nothing committed;
+- N = -18.226 m (GEOID18) both times; 200 x 200 samples at 1 m, 334 x 334 image pixels at 0.5988 m; the anchor ground 1266.96687 m above the ellipsoid in both.
+
+**What it shows.** Comparing the two `height.f32` grids sample by sample: `B[row, col]` against `A[row, col + k]` for a shift of k cells: k = 1: 39,800 samples (40,000 less one column), 100.0 % exactly equal, rms 0.0000 m, largest difference 0.0001 m; k = 0: 70.5 % equal, rms 0.0036 m, largest 0.0209 m; k = 2: 70.6 % equal, rms 0.0035 m; k = -1 and k = 3: rms 0.0050 and 0.0049 m. A shift of one row instead (k = 1, rows -1 or +1) is rms 0.0039 m. So a bbox moved one cell east moves the data exactly one column and no row: `bbox` and `size` land on the cell edges as section 4 assumes (pixel-is-area), to the service's float precision. The terrain is flat (A ranges 1266.919 to 1267.011 m), so the differences at the wrong shifts are small, but the exact equality at k = 1 and its absence at every other shift is the proof.
 
 ## 9. Order of work and what I need
 
