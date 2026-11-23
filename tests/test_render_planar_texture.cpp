@@ -279,7 +279,9 @@ TEST(PlanarTexture, AttachTerrainPutsTheMapsImageAtItsExtentWhenAskedAndLeavesTh
         RenderScene plain;
         plain.materials = {Material{}};
         plain.bounds = {glm::vec3(-60.0f, -5.0f, -60.0f), glm::vec3(60.0f, 5.0f, 60.0f)};
-        ASSERT_TRUE(spade::render::attach_terrain(plain, make()).has_value());
+        spade::render::TerrainSpec flat;
+        flat.textured = false;
+        ASSERT_TRUE(spade::render::attach_terrain(plain, make(), flat).has_value());
         EXPECT_FALSE(plain.planar_texture.has_value());
         EXPECT_FALSE(plain.statics.back().planar_textured);
     }

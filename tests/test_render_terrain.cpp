@@ -460,6 +460,7 @@ TEST(TerrainGround, InAFrameTheFloorNeverShowsThroughTheMap) {
     scene.materials.push_back(Material{glm::vec4(0.1f, 0.1f, 0.9f, 1.0f), 0u});  // the floor: blue
     add_floor(scene, 0.0f, 1u);
     TerrainSpec spec;
+    spec.textured = false;                          // this case is about what is in front, so the map's own colour, not its image
     spec.base_color = glm::vec3(0.9f, 0.1f, 0.1f);  // the map: red
     // Every height is under the floor, so a floor left at y = 0 would hide the whole map.
     ASSERT_TRUE(spade::render::attach_terrain(scene, make_map(40, 40, -20.0, 20.0, -20.0, 20.0, bowl), spec).has_value());

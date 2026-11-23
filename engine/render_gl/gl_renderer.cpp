@@ -1044,6 +1044,32 @@ layout(std430, binding = 1) readonly buffer Overrides  { uint uOverride[]; };
 layout(std430, binding = 4) readonly buffer Speeds { float uSpeed[]; };
 layout(std430, binding = 5) readonly buffer FlowWalls { uint uFlowWall[]; };  // DrawItem::flow_wall as 0, or its flow_gain's float bits
 layout(std430, binding = 8) readonly buffer Segments { uint uSegment[]; };    // segmentation's colour, RGBA8
+layout(std430, binding = 12) readonly buffer PlanarFlags { uint uPlanar[]; };  // DrawItem::planar_textured, 1 or 0 (SP-4)
+
+// SP-4: the scene's planar texture, RGBA8 on unit 9, read by texelFetch with the CPU's own convention (render/planar_texture.hpp's sample_planar_texture): texel centres half a texel in from
+// the extent's edges, a bilinear blend of the four around the point, each index clamped. No GL filter and no sRGB decode, so the two renderers cannot disagree on the sampler.
+layout(binding = 9) uniform sampler2D uPlanarTex;
+uniform uint uPlanarOn;       // a texture was uploaded and this is the shaded mode
+uniform vec4 uPlanarExtent;   // x_min, x_max, z_min, z_max
+
+vec3 planar_albedo(vec3 world) {
+    ivec2 size = textureSize(uPlanarTex, 0);
+    float u = (world.x - uPlanarExtent.x) / (uPlanarExtent.y - uPlanarExtent.x) * float(size.x) - 0.5;
+    float v = (world.z - uPlanarExtent.z) / (uPlanarExtent.w - uPlanarExtent.z) * float(size.y) - 0.5;
+    float fu = floor(u);
+    float fv = floor(v);
+    float tx = u - fu;
+    float ty = v - fv;
+    ivec2 hi = size - ivec2(1);
+    ivec2 i0 = ivec2(clamp(fu, -1.0, float(size.x)), clamp(fv, -1.0, float(size.y)));
+    ivec2 a = clamp(i0, ivec2(0), hi);
+    ivec2 b = clamp(i0 + ivec2(1), ivec2(0), hi);
+    vec3 c00 = texelFetch(uPlanarTex, ivec2(a.x, a.y), 0).rgb;
+    vec3 c10 = texelFetch(uPlanarTex, ivec2(b.x, a.y), 0).rgb;
+    vec3 c01 = texelFetch(uPlanarTex, ivec2(a.x, b.y), 0).rgb;
+    vec3 c11 = texelFetch(uPlanarTex, ivec2(b.x, b.y), 0).rgb;
+    return mix(mix(c00, c10, tx), mix(c01, c11, tx), ty);
+}
 
 uniform uint uSubmeshMaterial;
 uniform uint uNoMaterial;
@@ -1071,6 +1097,9 @@ void main() {
     }
     // Velocity swaps the colour and keeps the material's shading, as raster_cpu does.
     if (uMode == 3u) { base = velocity_ramp(uSpeed[vInstance], uVelocityScale); }
+    // SP-4: an item that asks for the planar texture is lit with the albedo at this pixel's world point as its colour: the CPU's white material times the albedo, because
+    // shade_surface is linear in `base` and applies the haze after. Shaded mode, opaque pass only, as raster_cpu.
+    if (uPlanarOn != 0u && uPlanar[vInstance] != 0u && uSeeThrough == 0u) { base = planar_albedo(vWorld); }
     vec3 face = flow_face_normal(vWorld);  // in uniform control flow, as it asks
     vec3 shaded = shade_surface(m.shading, base, normalize(vNormal), vWorld, face);
     if (uSeeThrough != 0u) {  // blended over the frame, no flow colouring (raster_cpu's see-through pass)
@@ -2062,6 +2091,8 @@ struct GlRenderer::Impl {
     GLuint ssbo_materials = 0;
     GLuint ssbo_speeds = 0;
     GLuint ssbo_walls = 0;
+    GLuint ssbo_planar = 0;  // DrawItem::planar_textured per instance (SP-4)
+    GLuint planar_tex = 0;   // the scene's planar texture, RGBA8, unit 9
     GLuint ssbo_segments = 0;
     GLuint ssbo_planes = 0;
     size_t transforms_capacity = 0;  // in instances, so growth is in place after the first
@@ -2069,6 +2100,7 @@ struct GlRenderer::Impl {
     size_t materials_capacity = 0;
     size_t speeds_capacity = 0;
     size_t walls_capacity = 0;
+    size_t planar_capacity = 0;
     size_t segments_capacity = 0;
     size_t planes_capacity = 0;
 
@@ -2224,6 +2256,9 @@ struct GlRenderer::Impl {
     std::vector<uint32_t> instance_overrides;
     std::vector<float> instance_speeds;
     std::vector<uint32_t> instance_walls;  // DrawItem::flow_wall, 1 or 0 (RND-8)
+    std::vector<uint32_t> instance_planar;  // DrawItem::planar_textured, 1 or 0 (SP-4)
+    bool planar_loaded = false;             // upload_scene() took a planar texture
+    glm::vec4 planar_extent{0.0f};          // its x_min, x_max, z_min, z_max
     std::vector<uint32_t> instance_segments;  // segmentation's colour per instance, RGBA8 (N13)
     std::vector<uint32_t> batch_base;    // per mesh: where its instances start
     std::vector<uint32_t> batch_count;   // per mesh: how many
@@ -2244,6 +2279,7 @@ struct GlRenderer::Impl {
     GLint u_instance_base = -1, u_view_proj = -1, u_submesh_material = -1, u_no_material = -1, u_see_through = -1;
     GLint u_sun_dir = -1, u_sun_color = -1, u_ambient = -1, u_sun_intensity = -1;
     GLint u_mode = -1, u_velocity_scale = -1, u_cam_pos = -1;
+    GLint u_planar_on = -1, u_planar_extent = -1;
     GLint u_sky_zenith = -1, u_sky_horizon = -1, u_horizon_strength = -1, u_horizon_onset = -1;
 
     struct BackgroundUniforms {
@@ -2406,6 +2442,8 @@ struct GlRenderer::Impl {
         if (ssbo_speeds != 0) gl.DeleteBuffers(1, &ssbo_speeds);
         if (ssbo_segments != 0) gl.DeleteBuffers(1, &ssbo_segments);
         if (ssbo_walls != 0) gl.DeleteBuffers(1, &ssbo_walls);
+        if (ssbo_planar != 0) gl.DeleteBuffers(1, &ssbo_planar);
+        if (planar_tex != 0) gl.DeleteTextures(1, &planar_tex);
         if (ssbo_materials != 0) gl.DeleteBuffers(1, &ssbo_materials);
         if (ssbo_overrides != 0) gl.DeleteBuffers(1, &ssbo_overrides);
         if (ssbo_transforms != 0) gl.DeleteBuffers(1, &ssbo_transforms);
@@ -2582,6 +2620,8 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
     impl->u_ambient = gl.GetUniformLocation(p, "uAmbient");
     impl->u_sun_intensity = gl.GetUniformLocation(p, "uSunIntensity");
     impl->u_mode = gl.GetUniformLocation(p, "uMode");
+    impl->u_planar_on = gl.GetUniformLocation(p, "uPlanarOn");
+    impl->u_planar_extent = gl.GetUniformLocation(p, "uPlanarExtent");
     impl->u_velocity_scale = gl.GetUniformLocation(p, "uVelocityScale");
     impl->u_cam_pos = gl.GetUniformLocation(p, "uCamPos");
     impl->u_sky_zenith = gl.GetUniformLocation(p, "uSkyZenith");
@@ -2616,6 +2656,8 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
     gl.GenBuffers(1, &impl->ssbo_speeds);
     gl.GenBuffers(1, &impl->ssbo_segments);
     gl.GenBuffers(1, &impl->ssbo_walls);
+    gl.GenBuffers(1, &impl->ssbo_planar);
+    gl.GenTextures(1, &impl->planar_tex);
     gl.GenBuffers(1, &impl->ssbo_planes);
     gl.GenVertexArrays(1, &impl->empty_vao);
 
@@ -2832,6 +2874,20 @@ Result<void> GlRenderer::upload_scene(const render::RenderScene& scene) {
                                              " normals"});
         }
     }
+    if (scene.planar_texture.has_value()) {
+        if (Result<void> valid = render::validate_planar_texture(*scene.planar_texture); !valid) {
+            return std::unexpected(Error{valid.error().code, "GlRenderer::upload_scene: " + valid.error().context});
+        }
+    } else {
+        for (const std::vector<render::DrawItem>* items : {&scene.statics, &scene.dynamics}) {
+            for (size_t i = 0; i < items->size(); ++i) {
+                if ((*items)[i].planar_textured) {
+                    return std::unexpected(Error{Code::invalid_argument, std::string("GlRenderer::upload_scene: ") + (items == &scene.statics ? "statics[" : "dynamics[") +
+                                                                             std::to_string(i) + "] asks for the planar texture, which the scene does not have"});
+                }
+            }
+        }
+    }
     if (scene.static_shadow.has_value()) {
         // A map whose depth array is not size x size cannot be sampled (the
         // CPU would read past it). Refused, never drawn unshadowed in
@@ -2960,6 +3016,24 @@ Result<void> GlRenderer::upload_scene(const render::RenderScene& scene) {
                  static_cast<GLsizeiptr>(s.gpu_materials.size() * sizeof(GpuMaterial)),
                  s.gpu_materials.data(), GL_STATIC_DRAW);
     s.materials_capacity = s.gpu_materials.size();
+
+    // SP-4: the planar texture, RGB8 as the CPU holds it, widened to RGBA8 (an RGB8 row is not 4-byte aligned in general). Its absence clears the flag the draw reads.
+    s.planar_loaded = scene.planar_texture.has_value();
+    if (s.planar_loaded) {
+        const render::PlanarTexture& t = *scene.planar_texture;
+        std::vector<uint8_t> rgba(static_cast<size_t>(t.width) * t.height * 4u, 255u);
+        for (size_t p = 0; p < static_cast<size_t>(t.width) * t.height; ++p) {
+            rgba[p * 4u] = t.rgb[p * 3u];
+            rgba[p * 4u + 1u] = t.rgb[p * 3u + 1u];
+            rgba[p * 4u + 2u] = t.rgb[p * 3u + 2u];
+        }
+        gl.BindTexture(GL_TEXTURE_2D, s.planar_tex);
+        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        gl.TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, static_cast<GLsizei>(t.width), static_cast<GLsizei>(t.height), 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+        gl.BindTexture(GL_TEXTURE_2D, 0);
+        s.planar_extent = glm::vec4(t.x_min, t.x_max, t.z_min, t.z_max);
+    }
 
     s.csg_subtrees = std::move(subtrees);
     s.csg_nodes_uploaded = nodes;
@@ -3296,6 +3370,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     s.instance_overrides.assign(total_instances, render::kNoMaterial);
     s.instance_speeds.assign(total_instances, 0.0f);
     s.instance_walls.assign(total_instances, 0u);
+    s.instance_planar.assign(total_instances, 0u);
     s.instance_segments.assign(total_instances, 0u);
     const bool sensor_segments = options.mode == render::DrawMode::segmentation;
     std::vector<uint32_t> cursor(s.batch_base.begin(), s.batch_base.end());
@@ -3306,6 +3381,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         s.instance_overrides[at] = d.material_override;
         s.instance_speeds[at] = d.speed_mps;
         s.instance_walls[at] = d.flow_wall ? std::bit_cast<uint32_t>(d.flow_gain) : 0u;
+        s.instance_planar[at] = d.planar_textured ? 1u : 0u;
         if (sensor_segments) {
             s.instance_segments[at] = pack_rgb8(render::item_segment_colour(scene, d, options.segment_by));
         }
@@ -3362,6 +3438,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     upload_in_place(gl, s.ssbo_speeds, s.speeds_capacity, s.instance_speeds);
     upload_in_place(gl, s.ssbo_segments, s.segments_capacity, s.instance_segments);
     upload_in_place(gl, s.ssbo_walls, s.walls_capacity, s.instance_walls);
+    upload_in_place(gl, s.ssbo_planar, s.planar_capacity, s.instance_planar);
     upload_in_place(gl, s.ssbo_planes, s.planes_capacity, s.gpu_planes);
     gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
@@ -3372,6 +3449,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, s.ssbo_speeds);
     gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, s.ssbo_segments);
     gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, s.ssbo_walls);
+    gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 12, s.ssbo_planar);
 
     // --- camera ------------------------------------------------------------
     // The engine's camera space is right-handed with forward = -Z
@@ -3612,6 +3690,11 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         gl.Uniform1f(s.u_sun_intensity, light.sun_intensity);
         gl.Uniform1ui(s.u_mode, static_cast<GLuint>(options.mode));
         gl.Uniform1f(s.u_velocity_scale, options.velocity_scale_mps);
+        gl.Uniform1ui(s.u_planar_on, s.planar_loaded && options.mode == render::DrawMode::shaded ? 1u : 0u);
+        gl.Uniform4fv(s.u_planar_extent, 1, glm::value_ptr(s.planar_extent));
+        gl.ActiveTexture(GL_TEXTURE9);
+        gl.BindTexture(GL_TEXTURE_2D, s.planar_tex);
+        gl.ActiveTexture(GL_TEXTURE0);
         set_shadow_uniforms(s.mesh_shadow);
         set_flow_uniforms(s.mesh_flow);
         set_sensor_uniforms(s.mesh_sensor);
