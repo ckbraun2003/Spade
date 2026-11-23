@@ -47,6 +47,9 @@
 .PARAMETER Px4Script
     Interface's start and stop script. Default: scripts\px4-sitl.ps1. A test points it at a fake.
 
+.PARAMETER PublishOffboard
+    Passed on to px4-sitl.ps1 as its -PublishOffboard (the container's UDP 14580 on this machine's loopback only). Nothing else changes.
+
 .EXAMPLE
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts\fc-run.ps1 -Build build-ninja\release
 #>
@@ -58,7 +61,8 @@ param(
     [string] $HostAddress = 'host.docker.internal',
     [string] $Filter = '',
     [string] $DockerUp,
-    [string] $Px4Script
+    [string] $Px4Script,
+    [switch] $PublishOffboard
 )
 # 'Continue', not 'Stop': Windows PowerShell 5.1 turns a native command's stderr under 2>&1 into a terminating error, and ctest and docker write there.
 $ErrorActionPreference = 'Continue'
@@ -104,7 +108,8 @@ if (-not (Test-Path -LiteralPath (Join-Path $Build 'CTestTestfile.cmake'))) {
 if (-not (Get-Command ctest -ErrorAction SilentlyContinue)) { Finish 'FAIL' 1 @('ctest is not on PATH') }
 
 # 2: the container. The last line it printed is the reason when it fails.
-$px4Out = @(& $ps -NoProfile -ExecutionPolicy Bypass -File $Px4Script -RunId $RunId -HostAddress $HostAddress -OutDir $out 2>&1 | ForEach-Object { "$_" })
+$px4Extra = if ($PublishOffboard) { @('-PublishOffboard') } else { @() }
+$px4Out = @(& $ps -NoProfile -ExecutionPolicy Bypass -File $Px4Script -RunId $RunId -HostAddress $HostAddress -OutDir $out @px4Extra 2>&1 | ForEach-Object { "$_" })
 $px4Code = $LASTEXITCODE
 if ($px4Code -ne 0) {
     $px4Lines = @($px4Out | Where-Object { $_.Trim() })
