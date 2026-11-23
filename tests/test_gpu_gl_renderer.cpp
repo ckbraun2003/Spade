@@ -5623,4 +5623,42 @@ TEST_F(GpuGlRenderer, TheFlatTerrainsGlFrameIsTheOneBeforeTheTexture) {
     EXPECT_EQ(flat_pin::digest(gl), UINT64_C(16726099002277015038)) << renderer_->renderer_name() << ": the flat terrain's GL frame changed";
 }
 
+// The no-search extrapolation on GL as on the CPU (O158): p = 0.8 z, no solid, the wall's value 0; GL's frame is the CPU's within one level.
+TEST_F(GpuGlRenderer, AnExtrapolatedSurfaceColouringWithNoSearchMatchesTheCpu) {
+    const spade::FlowVolume volume = spade::test::make_flow_volume(glm::vec3(-2.0f, -2.0f, -1.0f), 0.25f, 16, 16, 8, [](glm::vec3 p) {
+        spade::test::FlowChannels c{};
+        c[spade::kFlowPressure] = 0.8f * p.z;
+        return c;
+    });
+    spade::render::TransferFunction colours;
+    colours.quantity = spade::render::FlowQuantity::pressure;
+    colours.colours = spade::render::ColourMapId::cool_warm;
+    colours.range_min = -1.0f;
+    colours.range_max = 1.0f;
+    RenderScene scene;
+    spade::render::MeshData quad;
+    quad.positions = {glm::vec3(-1.5f, -1.5f, 0.0f), glm::vec3(1.5f, -1.5f, 0.0f), glm::vec3(1.5f, 1.5f, 0.0f), glm::vec3(-1.5f, 1.5f, 0.0f)};
+    quad.normals.assign(4, glm::vec3(0.0f, 0.0f, 1.0f));
+    quad.indices = {0, 1, 2, 0, 2, 3};
+    scene.meshes.push_back(quad);
+    scene.materials = {Material{}};
+    DrawItem item{.mesh_index = 0, .local_to_world = glm::mat4(1.0f)};
+    item.flow_wall = true;
+    scene.statics.push_back(item);
+    scene.bounds = spade::render::Aabb{.min = glm::vec3(-5.0f), .max = glm::vec3(5.0f)};
+    Camera camera;
+    camera.position = glm::vec3(0.0f, 0.0f, 5.0f);
+    spade::render::FlowSurfaceColouring colouring{&volume, colours};
+    colouring.walls_only = true;
+    colouring.offset_cells = 1.0f;
+    colouring.extrapolate = true;
+    scene.flow_surface_colouring = colouring;
+    const std::vector<uint8_t> gl = draw_and_read(scene, comparable_options(), camera);
+    const std::vector<uint8_t> cpu = cpu_rgba(scene, camera, comparable_options());
+    ASSERT_EQ(gl.size(), kPixels * 4u);
+    const ChannelDiff band = channel_diff(cpu, gl);
+    EXPECT_LE(band.worst, 1) << renderer_->renderer_name();
+    EXPECT_EQ(band.over_two, 0u);
+}
+
 }  // namespace
