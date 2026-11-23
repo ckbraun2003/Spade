@@ -163,6 +163,7 @@ add_executable(spade_tests
     test_imu.cpp
     test_camera.cpp
     test_camera_module.cpp
+    test_camera_host.cpp
     test_camera_capacities.cpp
     test_camera_lens.cpp
     test_ray_scene.cpp
