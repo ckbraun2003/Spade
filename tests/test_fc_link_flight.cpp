@@ -117,7 +117,7 @@ TEST(FcLinkFlight, ReachingTheTakeoffBandStartsTheHoverAndMissingItInTimeFails) 
         EXPECT_TRUE(at(m, 24.0, true, 1.5).empty());
         EXPECT_EQ(m.phase(), FlightMission::Phase::takeoff) << "1.5 m is outside 2.0 +- 0.2";
         EXPECT_TRUE(at(m, 25.0, true, 1.85).empty());
-        EXPECT_EQ(m.phase(), FlightMission::Phase::settle) << "inside 2.0 +- 0.2 but not yet inside the hover band of 0.1: the climb is still settling";
+        EXPECT_EQ(m.phase(), FlightMission::Phase::settle) << "inside 2.0 +- 0.2 but not yet inside the settle band of 0.05: the climb is still settling";
         const FlightCheck* h = check(m, "takeoff_height");
         ASSERT_NE(h, nullptr);
         EXPECT_TRUE(h->pass);
@@ -130,7 +130,7 @@ TEST(FcLinkFlight, ReachingTheTakeoffBandStartsTheHoverAndMissingItInTimeFails) 
         ASSERT_NE(s, nullptr);
         EXPECT_TRUE(s->pass);
         EXPECT_NEAR(s->measured, 0.05, 1e-9) << "distance from the takeoff height when the hover began";
-        EXPECT_EQ(s->limit, 0.1);
+        EXPECT_EQ(s->limit, 0.05) << "the settle band, not the hover band";
         EXPECT_NEAR(s->time_s, 26.0, 1e-9);
     }
     {
@@ -160,13 +160,15 @@ TEST(FcLinkFlight, AClimbStillCreepingUpToTheSetpointIsAHoverJudgedAgainstTheSet
     EXPECT_TRUE(at(m, 26.8, true, 1.80).empty());
     EXPECT_EQ(m.phase(), FlightMission::Phase::settle);
     EXPECT_TRUE(at(m, 28.0, true, 1.93).empty());
-    EXPECT_EQ(m.phase(), FlightMission::Phase::hover) << "within 0.1 m of 2.0 m";
+    EXPECT_EQ(m.phase(), FlightMission::Phase::settle) << "0.07 m from 2.0 m: inside the old 0.1 band, outside the settle band of 0.05";
+    EXPECT_TRUE(at(m, 29.0, true, 1.96).empty());
+    EXPECT_EQ(m.phase(), FlightMission::Phase::hover) << "within 0.05 m of 2.0 m";
     // 10 s of creeping from 1.93 to 2.00: 0.07 m, inside the band against the setpoint (against where it began it would be 0.07 too, but a climb that began at
     // 1.90 and ended at 2.0 is 0.10: the failure of dry run 2 was this shape).
-    const auto sent = drive(m, 28.1, 38.5, [](double t) { return std::pair{true, 1.93 + 0.007 * (t - 28.0)}; });
+    const auto sent = drive(m, 29.1, 39.5, [](double t) { return std::pair{true, 1.96 + 0.003 * (t - 29.0)}; });
     ASSERT_EQ(sent.size(), 1u);
     EXPECT_EQ(sent[0].command.command, kLand);
-    EXPECT_NEAR(sent[0].t, 38.0, 0.05) << "10 s after the hover began";
+    EXPECT_NEAR(sent[0].t, 39.0, 0.05) << "10 s after the hover began";
     const FlightCheck* hover = check(m, "hover_within_m");
     ASSERT_NE(hover, nullptr);
     EXPECT_TRUE(hover->pass);
@@ -185,7 +187,7 @@ TEST(FcLinkFlight, NotSettledWithinTheTakeoffTimeoutFailsNamingTheDistanceFromTh
     ASSERT_NE(s, nullptr);
     EXPECT_FALSE(s->pass);
     EXPECT_NEAR(s->measured, 0.15, 1e-9);
-    EXPECT_EQ(s->limit, 0.1);
+    EXPECT_EQ(s->limit, 0.05) << "the settle band";
     EXPECT_NEAR(s->time_s, 40.5, 0.05) << "judged when takeoff_timeout_s ran out, counted from the takeoff command";
 }
 

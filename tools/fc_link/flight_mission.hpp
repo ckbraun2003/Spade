@@ -28,8 +28,9 @@ struct FlightConfig {
     double arm_retry_s = 1.0;          // a temporarily rejected or unanswered arm is sent again after this long
     double takeoff_band_m = 0.2;       // the takeoff height +- this, reached within takeoff_timeout_s of the takeoff command
     double takeoff_timeout_s = 20.0;
+    double settle_band_m = 0.05;       // the climb is settled when within this of the takeoff height (by takeoff_timeout_s); the hover then starts
     double hover_s = 10.0;             // how long the hover is held
-    double hover_band_m = 0.1;         // the altitude stays within this of where the hover began
+    double hover_band_m = 0.1;         // every altitude of the hover stays within this of the takeoff height (the setpoint, not where the hover began)
     double landed_height_m = 0.05;     // landed: below this and disarmed
     double land_timeout_s = 30.0;      // landed within this long of the land command
 };
