@@ -30,7 +30,7 @@ param(
     [string]$Image = 'spade-px4-sitl:v1.17.0',
     [int]$Autostart = 10090,                          # the airframe: 10090 = PX4's own x500 numbers, 10091 = the kit (when it exists)
     [int]$SimPort = 4560,                             # PX4's simulator port; the container's instance 0
-    [switch]$PublishOffboard,                         # publish PX4's offboard API port (UDP 14540) on this machine's loopback only, for a companion computer
+    [switch]$PublishOffboard,                         # publish PX4's offboard API port on this machine's loopback only, for a companion computer: UDP 14580, the port PX4 LISTENS on in the container (14540 is where it SENDS, inside the container, so publishing it would carry nothing in)
     [string]$Network = '',                            # docker's --network for the container; empty = docker's default bridge, which a real run needs (PX4 must reach the host's TCP 4560). A check with no route passes `none`: the --add-host entry still resolves
     [string]$Docker = 'docker'                        # the docker command; a test points it at a fake
 )
@@ -66,7 +66,7 @@ if (-not $Stop) {
         '-w', "$px4Dir/rootfs",
         '--entrypoint', 'sh')
     if ($Network) { $dockerArgs += @('--network', $Network) }
-    if ($PublishOffboard) { $dockerArgs += @('-p', '127.0.0.1:14540:14540/udp') }
+    if ($PublishOffboard) { $dockerArgs += @('-p', '127.0.0.1:14580:14580/udp') }
     # PX4's log folder is created first, so -Stop's docker cp always finds one (empty = no log = `none`); then sh gives way to px4 (exec).
     $dockerArgs += @($Image, '-c', "mkdir -p $px4Dir/rootfs/log && exec $px4Dir/bin/px4 $px4Dir/etc -s etc/init.d-posix/rcS -d")
     & $Docker @dockerArgs *> $null
