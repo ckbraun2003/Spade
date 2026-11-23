@@ -15,9 +15,11 @@
 namespace spade::sandbox::editor {
 
 [[nodiscard]] inline std::vector<live::ScreenText> drawn_texts(const EditorPanels& p) {
-    // RED: every string, drawn or not (what the first watch did).
-    return {{"item_path", p.item_path}, {"status", p.status},       {"title", p.title},           {"path", p.path},
-            {"selected_source", p.selected_source}, {"view_note", p.view_note}, {"close_prompt", p.close_prompt}};
+    std::vector<live::ScreenText> out = {{"item_path", p.item_path}, {"status", p.status}, {"title", p.title}, {"view_note", p.view_note},
+                                         {"close_prompt", p.close_prompt}};
+    if (p.drawn.scene_file_field) out.push_back({"path", p.path});
+    if (p.drawn.imported_from) out.push_back({"selected_source", "imported from " + p.selected_source});
+    return out;
 }
 
 }  // namespace spade::sandbox::editor

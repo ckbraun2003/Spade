@@ -294,6 +294,7 @@ void toolbar(ed::EditorPanels& p) {
             ui::gap();
         }
         ImGui::TextDisabled("Scene file");
+        p.drawn.scene_file_field = true;
         std::string path = p.path;
         if (edit_text("##path", p.path, path)) p.path = path;
         if (ImGui::Button("Open")) {
@@ -707,6 +708,7 @@ void inspect_vehicle(ed::EditorPanels& p, const scene::SceneVehicle& v) {
 void inspect_asset(ed::EditorPanels& p, const scene::SceneAsset& a) {
     ui::title(a.name.c_str());
     if (!p.selected_source.empty()) {
+        p.drawn.imported_from = true;
         ImGui::PushTextWrapPos(0.0f);
         ImGui::TextDisabled("imported from %s", p.selected_source.c_str());
         ImGui::PopTextWrapPos();
@@ -1225,6 +1227,7 @@ void flow_legend(const ed::EditorPanels& p) {
 }  // namespace
 
 void draw_editor_panels(editor::EditorPanels& panels) {
+    panels.drawn = {};  // the panels below say what they draw this frame (the live smoke's path watch reads it)
     toolbar(panels);
     hierarchy(panels);
     inspector(panels);
