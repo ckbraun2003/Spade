@@ -57,8 +57,8 @@ inline constexpr double kGroundAmslM = 488.0;
 // Where on Earth the world's origin is (PX4 SITL's default home, Zurich): the autopilot's geodetic home. These and kGroundAmslM are the ONLY place the
 // run's code-made geography lives, so the run record's world_file_hash (this header) covers them.
 inline constexpr double kHomeLat = 47.397742, kHomeLon = 8.545594;
-// Where each sensor sits in FlightWorld::bindings, for AutopilotLink's ExchangeConfig (the IMU is 0). RED: not set yet.
-inline constexpr uint32_t kBaroBinding = 0, kMagBinding = 0, kGnssBinding = 0;
+// Where each sensor sits in FlightWorld::bindings, for AutopilotLink's ExchangeConfig (the IMU is 0).
+inline constexpr uint32_t kBaroBinding = 1, kMagBinding = 2, kGnssBinding = 3;
 
 [[nodiscard]] inline std::optional<FlightWorld> make_flight_world() {
     namespace x5 = spade::test::x500;

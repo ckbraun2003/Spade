@@ -63,8 +63,6 @@ std::string env_or_empty(const char* name) {
 #endif
 
 constexpr uint16_t kPx4ListenPort = 14580;  // PX4's local UDP port for the offboard instance, published on the host's loopback by fc-run
-// PX4 SITL's default home (Zurich), and the barometer altitude the still feeds of the other live tests use: the world's ground is at this height AMSL.
-constexpr double kHomeLat = 47.397742, kHomeLon = 8.545594, kHomeAmslM = 488.0;
 
 const char* phase_name(FlightMission::Phase p) {
     switch (p) {
@@ -128,10 +126,10 @@ TEST(FcLiveFlight, Px4FliesTheX500ThroughArmTakeoffHoverAndLand) {
     std::optional<ActuatorReply> last_reply;
     ExchangeConfig cfg;
     cfg.chain = &*world->model.model.propulsion;
-    cfg.baro_binding = 1;
-    cfg.mag_binding = 2;
-    cfg.gnss_binding = 3;
-    cfg.geo_frame = spade::geo::make_local_frame(spade::geo::Geodetic{kHomeLat, kHomeLon, kHomeAmslM});
+    cfg.baro_binding = fc_flight_test::kBaroBinding;  // where each sensor sits, and the home, live in the hashed world header (tests/fc_flight_world.hpp)
+    cfg.mag_binding = fc_flight_test::kMagBinding;
+    cfg.gnss_binding = fc_flight_test::kGnssBinding;
+    cfg.geo_frame = spade::geo::make_local_frame(spade::geo::Geodetic{fc_flight_test::kHomeLat, fc_flight_test::kHomeLon, fc_flight_test::kGroundAmslM});
     cfg.home_world = glm::dvec3(0.0);  // the ground under the vehicle's start is the autopilot's NED origin
     auto alink = AutopilotLink::create(
         [&](const mav::HilSensor& s, const std::optional<mav::HilGps>& g) -> spade::Result<ActuatorReply> {
@@ -143,7 +141,7 @@ TEST(FcLiveFlight, Px4FliesTheX500ThroughArmTakeoffHoverAndLand) {
     ASSERT_TRUE(alink.has_value()) << alink.error().context;
 
     FlightConfig fcfg;  // the defaults: PROVISIONAL bands
-    fcfg.home_amsl_m = kHomeAmslM + world->rest_com_y;  // altitude_m() is the centre of mass above its rest height; param7 is AMSL
+    fcfg.home_amsl_m = fc_flight_test::kGroundAmslM + world->rest_com_y;  // altitude_m() is the centre of mass above its rest height; param7 is AMSL
     FlightMission mission(fcfg);
     HeartbeatSchedule schedule;
     mav::Parser parser;
