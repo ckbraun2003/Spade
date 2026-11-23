@@ -59,6 +59,11 @@ inline constexpr double kGroundAmslM = 488.0;
 inline constexpr double kHomeLat = 47.397742, kHomeLon = 8.545594;
 // Where each sensor sits in FlightWorld::bindings, for AutopilotLink's ExchangeConfig (the IMU is 0).
 inline constexpr uint32_t kBaroBinding = 1, kMagBinding = 2, kGnssBinding = 3;
+// The barometer's and the magnetometer's white noise. A real sensor never repeats a reading bit for bit, and PX4's sensor validators read a value that
+// repeats exactly as a FROZEN sensor (STALE: BARO #0 and #1 and MAG #0 in the logs of dry runs 3 and 4b, with the barometer's logged pressure identical for
+// 22 s at rest). The sigmas are the boot messages' own (fc_host::BootConfig: 1 Pa, 0.1 uT). RED: zero, the engine's default, until the test below passes.
+inline constexpr float kBaroSigmaPa = 0.0f;
+inline constexpr float kMagSigmaUt = 0.0f;
 
 [[nodiscard]] inline std::optional<FlightWorld> make_flight_world() {
     namespace x5 = spade::test::x500;
@@ -101,10 +106,12 @@ inline constexpr uint32_t kBaroBinding = 1, kMagBinding = 2, kGnssBinding = 3;
 
     spade::sensors::BaroSensorSpawn baro;
     baro.rate_divider = kBaroDivider;
+    baro.sigma_p_pa = kBaroSigmaPa;
     baro.world_origin_altitude_m = static_cast<float>(kGroundAmslM);  // the ground is 488 m above the ISA datum, as the GNSS says
     spade::sensors::MagSensorSpawn mag;
     mag.rate_divider = kMagDivider;
     mag.field_world_ut = glm::vec3(20.0f, -40.0f, 5.0f);
+    mag.sigma_white_ut = kMagSigmaUt;
     spade::GnssSensorSpawn gnss;
     gnss.rate_divider = kGnssDivider;
     const auto baro_row = sim->attach_row(vehicle->body, "baro_sensors", baro);

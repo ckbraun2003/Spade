@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <vector>
 
 #include "../sandbox/flight_controller.hpp"
 #include "analysis/case.hpp"
@@ -61,6 +62,46 @@ TEST(FcFlightWorld, TheBindingIndicesNameTheSensorsInTheOrderTheWorldBuildsThem)
     EXPECT_EQ(w->bindings[kBaroBinding].kind, spade::fc_host::SensorKind::baro);
     EXPECT_EQ(w->bindings[kMagBinding].kind, spade::fc_host::SensorKind::mag);
     EXPECT_EQ(w->bindings[kGnssBinding].kind, spade::fc_host::SensorKind::gnss);
+}
+
+// PX4's sensor validators read a reading that repeats exactly as a frozen sensor and fail it as STALE. Both flight logs of dry runs 3 and 4b carry such failures
+// (MAG #0 at about 3.5 s, BARO #0 and #1 later) and the barometer's logged pressure sat identical for 22 s at rest: the flight world's barometer and
+// magnetometer had no noise. At rest for 6 s (300 barometer and 600 magnetometer samples) neither may repeat a reading more than a handful of times in a row.
+TEST(FcFlightWorld, TheBarometerAndMagnetometerNeverRepeatAReadingBitForBitAtRest) {
+    std::optional<FlightWorld> w = make_flight_world();
+    ASSERT_TRUE(w.has_value());
+    auto host = spade::fc_host::LockstepHost::open(w->sim, w->vehicle, w->bindings);
+    ASSERT_TRUE(host.has_value()) << host.error().context;
+    std::vector<float> baro;
+    std::vector<std::array<float, 3>> mag;
+    for (uint64_t step = 1; step <= 60; ++step) {  // 6 s in 100 ms steps
+        ASSERT_TRUE(host->advance_to(step * 200 * kDtNs).has_value());
+        const auto samples = host->take_sensors();
+        ASSERT_TRUE(samples.has_value());
+        for (const spade::fc_host::Sample& s : *samples) {
+            if (s.kind == spade::fc_host::SensorKind::baro) {
+                spade::sensors::BaroSample b{};
+                std::memcpy(&b, s.bytes.data(), sizeof(b));
+                baro.push_back(b.pressure_pa);
+            } else if (s.kind == spade::fc_host::SensorKind::mag) {
+                spade::sensors::MagSample m{};
+                std::memcpy(&m, s.bytes.data(), sizeof(m));
+                mag.push_back({m.field_body_ut.x, m.field_body_ut.y, m.field_body_ut.z});
+            }
+        }
+    }
+    ASSERT_GE(baro.size(), 290u);
+    ASSERT_GE(mag.size(), 590u);
+    const auto longest_run = [](const auto& v) {
+        std::size_t best = 1, run = 1;
+        for (std::size_t i = 1; i < v.size(); ++i) {
+            run = (v[i] == v[i - 1]) ? run + 1 : 1;
+            best = std::max(best, run);
+        }
+        return best;
+    };
+    EXPECT_LT(longest_run(baro), 10u) << "of " << baro.size() << " barometer samples";
+    EXPECT_LT(longest_run(mag), 10u) << "of " << mag.size() << " magnetometer samples";
 }
 
 TEST(FcFlightWorld, ACommonDutyControllerTakesTheX500ToTwoMetersAndHoldsItAtASaneDuty) {
