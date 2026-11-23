@@ -29,8 +29,13 @@ set(problems "")
 if(rc EQUAL 0)
     string(APPEND problems "the script exited 0 on a directory that is not a build tree (it must refuse); ")
 endif()
-if(NOT "${out}${err}" MATCHES "is not a CMake build tree")
-    string(APPEND problems "the output does not say 'is not a CMake build tree': ${out}${err}; ")
+# CMake wraps an error message at about 80 columns, so how the phrase falls depends on the length of the path in it ("is not a CMake" / "build tree" on two
+# lines on a long path). The old WILL_FAIL test passed on a developer's long path for exactly that reason, by never matching, and failed in the gate. Runs of
+# white space, newlines included, are one space before the phrase is looked for.
+string(REGEX REPLACE "[ 	
+]+" " " flat "${out}${err}")
+if(NOT flat MATCHES "is not a CMake build tree")
+    string(APPEND problems "the output does not say 'is not a CMake build tree': ${flat}; ")
 endif()
 if(NOT EXISTS "${scratch}/sdk_install_test/keep.txt")
     string(APPEND problems "the sentinel under the scratch prefix is gone: the script removed something before refusing; ")
