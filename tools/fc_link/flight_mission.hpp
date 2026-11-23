@@ -57,7 +57,7 @@ struct FlightCheck {
 
 class FlightMission {
 public:
-    enum class Phase { boot, arming, takeoff, hover, land, done, failed };
+    enum class Phase { boot, arming, takeoff, settle, hover, land, done, failed };
 
     explicit FlightMission(const FlightConfig& config = {}) : config_(config) {}
 

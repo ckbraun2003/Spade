@@ -117,13 +117,21 @@ TEST(FcLinkFlight, ReachingTheTakeoffBandStartsTheHoverAndMissingItInTimeFails) 
         EXPECT_TRUE(at(m, 24.0, true, 1.5).empty());
         EXPECT_EQ(m.phase(), FlightMission::Phase::takeoff) << "1.5 m is outside 2.0 +- 0.2";
         EXPECT_TRUE(at(m, 25.0, true, 1.85).empty());
-        EXPECT_EQ(m.phase(), FlightMission::Phase::hover);
+        EXPECT_EQ(m.phase(), FlightMission::Phase::settle) << "inside 2.0 +- 0.2 but not yet inside the hover band of 0.1: the climb is still settling";
         const FlightCheck* h = check(m, "takeoff_height");
         ASSERT_NE(h, nullptr);
         EXPECT_TRUE(h->pass);
         EXPECT_NEAR(h->measured, 0.15, 1e-9) << "distance from 2.0 m";
         EXPECT_EQ(h->limit, 0.2);
         EXPECT_NEAR(h->time_s, 25.0, 1e-9);
+        EXPECT_TRUE(at(m, 26.0, true, 1.95).empty());
+        EXPECT_EQ(m.phase(), FlightMission::Phase::hover);
+        const FlightCheck* s = check(m, "settled_within_m");
+        ASSERT_NE(s, nullptr);
+        EXPECT_TRUE(s->pass);
+        EXPECT_NEAR(s->measured, 0.05, 1e-9) << "distance from the takeoff height when the hover began";
+        EXPECT_EQ(s->limit, 0.1);
+        EXPECT_NEAR(s->time_s, 26.0, 1e-9);
     }
     {
         FlightMission m(config());
@@ -138,6 +146,42 @@ TEST(FcLinkFlight, ReachingTheTakeoffBandStartsTheHoverAndMissingItInTimeFails) 
         EXPECT_NEAR(h->measured, 1.0, 1e-9) << "how far from 2.0 m it was when the 20 s ran out";
         EXPECT_NEAR(h->time_s, 40.5, 0.05);
     }
+}
+
+// The case of dry run 2 (PX4 climbing slowly up to its setpoint): the hover is judged against the TAKEOFF HEIGHT, not against the altitude where it began.
+TEST(FcLinkFlight, AClimbStillCreepingUpToTheSetpointIsAHoverJudgedAgainstTheSetpoint) {
+    FlightMission m(config());
+    ASSERT_EQ(at(m, 20.0, false, 0.0).size(), 1u);
+    ASSERT_EQ(at(m, 20.5, true, 0.0).size(), 1u);  // the takeoff
+    EXPECT_TRUE(at(m, 26.8, true, 1.80).empty());
+    EXPECT_EQ(m.phase(), FlightMission::Phase::settle);
+    EXPECT_TRUE(at(m, 28.0, true, 1.93).empty());
+    EXPECT_EQ(m.phase(), FlightMission::Phase::hover) << "within 0.1 m of 2.0 m";
+    // 10 s of creeping from 1.93 to 2.00: 0.07 m, inside the band against the setpoint (against where it began it would be 0.07 too, but a climb that began at
+    // 1.90 and ended at 2.0 is 0.10: the failure of dry run 2 was this shape).
+    const auto sent = drive(m, 28.1, 38.5, [](double t) { return std::pair{true, 1.93 + 0.007 * (t - 28.0)}; });
+    ASSERT_EQ(sent.size(), 1u);
+    EXPECT_EQ(sent[0].command.command, kLand);
+    EXPECT_NEAR(sent[0].t, 38.0, 0.05) << "10 s after the hover began";
+    const FlightCheck* hover = check(m, "hover_within_m");
+    ASSERT_NE(hover, nullptr);
+    EXPECT_TRUE(hover->pass);
+    EXPECT_LE(hover->measured, 0.1) << "the largest distance from 2.0 m during the hover";
+}
+
+TEST(FcLinkFlight, NotSettledWithinTheTakeoffTimeoutFailsNamingTheDistanceFromTheSetpoint) {
+    FlightMission m(config());
+    ASSERT_EQ(at(m, 20.0, false, 0.0).size(), 1u);
+    ASSERT_EQ(at(m, 20.5, true, 0.0).size(), 1u);
+    EXPECT_TRUE(drive(m, 21.0, 41.0, [](double) { return std::pair{true, 1.85}; }).empty()) << "inside the takeoff band, never inside the hover band";
+    EXPECT_TRUE(m.finished());
+    EXPECT_FALSE(m.passed());
+    const FlightCheck* s = check(m, "settled_within_m");
+    ASSERT_NE(s, nullptr);
+    EXPECT_FALSE(s->pass);
+    EXPECT_NEAR(s->measured, 0.15, 1e-9);
+    EXPECT_EQ(s->limit, 0.1);
+    EXPECT_NEAR(s->time_s, 40.5, 0.05) << "judged when takeoff_timeout_s ran out, counted from the takeoff command";
 }
 
 TEST(FcLinkFlight, TheHoverIsHeldForTheHoverTimeAndThenTheLandCommandGoesOut) {
