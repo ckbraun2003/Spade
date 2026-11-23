@@ -137,8 +137,12 @@ TEST(FcLinkFlight, ReachingTheTakeoffBandStartsTheHoverAndMissingItInTimeFails) 
         FlightMission m(config());
         ASSERT_EQ(at(m, 20.0, false, 0.0).size(), 1u);
         ASSERT_EQ(at(m, 20.5, true, 0.0).size(), 1u);
-        EXPECT_TRUE(drive(m, 21.0, 41.0, [](double) { return std::pair{true, 1.0}; }).empty());
-        EXPECT_TRUE(m.finished());
+        const auto sent = drive(m, 21.0, 41.0, [](double) { return std::pair{true, 1.0}; });
+        ASSERT_EQ(sent.size(), 1u) << "a failed check in the air sends LAND";
+        EXPECT_EQ(sent[0].command.command, kLand);
+        EXPECT_NEAR(sent[0].t, 40.5, 0.05);
+        EXPECT_EQ(m.phase(), FlightMission::Phase::aborting);
+        EXPECT_FALSE(m.finished()) << "not over until the vehicle is down and disarmed";
         EXPECT_FALSE(m.passed());
         const FlightCheck* h = check(m, "takeoff_height");
         ASSERT_NE(h, nullptr);
@@ -173,8 +177,9 @@ TEST(FcLinkFlight, NotSettledWithinTheTakeoffTimeoutFailsNamingTheDistanceFromTh
     FlightMission m(config());
     ASSERT_EQ(at(m, 20.0, false, 0.0).size(), 1u);
     ASSERT_EQ(at(m, 20.5, true, 0.0).size(), 1u);
-    EXPECT_TRUE(drive(m, 21.0, 41.0, [](double) { return std::pair{true, 1.85}; }).empty()) << "inside the takeoff band, never inside the hover band";
-    EXPECT_TRUE(m.finished());
+    const auto sent = drive(m, 21.0, 41.0, [](double) { return std::pair{true, 1.85}; });
+    ASSERT_EQ(sent.size(), 1u) << "inside the takeoff band, never inside the hover band: it fails and aborts to land";
+    EXPECT_EQ(sent[0].command.command, kLand);
     EXPECT_FALSE(m.passed());
     const FlightCheck* s = check(m, "settled_within_m");
     ASSERT_NE(s, nullptr);
@@ -208,8 +213,10 @@ TEST(FcLinkFlight, DriftingOutOfTheHoverBandFailsWhereItHappens) {
     ASSERT_TRUE(at(m, 25.0, true, 2.0).empty());
     EXPECT_TRUE(at(m, 28.0, true, 2.09).empty());
     EXPECT_FALSE(m.finished());
-    EXPECT_TRUE(at(m, 29.0, true, 2.13).empty()) << "0.13 m from where the hover began";
-    EXPECT_TRUE(m.finished());
+    const auto abort_cmds = at(m, 29.0, true, 2.13);
+    ASSERT_EQ(abort_cmds.size(), 1u) << "0.13 m from the setpoint: the hover fails and LAND goes out at once";
+    EXPECT_EQ(abort_cmds[0].command, kLand);
+    EXPECT_EQ(m.phase(), FlightMission::Phase::aborting);
     EXPECT_FALSE(m.passed());
     const FlightCheck* s = check(m, "hover_within_m");
     ASSERT_NE(s, nullptr);
@@ -250,4 +257,63 @@ TEST(FcLinkFlight, LandedMeansLowAndDisarmedWithinTheLandTimeAndPassesTheMission
         ASSERT_NE(l, nullptr);
         EXPECT_FALSE(l->pass);
     }
+}
+
+// The abort: a failed check once armed sends LAND and the mission waits (up to land_timeout_s) for landed AND disarmed.
+namespace {
+// A hover that fails at 29.0 s (the abort begins there), the mission in the aborting phase.
+FlightMission aborting_mission() {
+    FlightMission m(config());
+    EXPECT_EQ(at(m, 20.0, false, 0.0).size(), 1u);
+    EXPECT_EQ(at(m, 20.5, true, 0.0).size(), 1u);
+    EXPECT_TRUE(at(m, 25.0, true, 2.0).empty());
+    EXPECT_EQ(at(m, 29.0, true, 2.13).size(), 1u);
+    return m;
+}
+}  // namespace
+
+TEST(FcLinkFlight, AnAbortThatLandsAndDisarmsEndsCleanlyAndIsRecordedButTheMissionNeverPasses) {
+    FlightMission m = aborting_mission();
+    ASSERT_EQ(m.phase(), FlightMission::Phase::aborting);
+    EXPECT_TRUE(at(m, 33.0, true, 1.0).empty()) << "no second LAND";
+    EXPECT_TRUE(at(m, 37.0, true, 0.03).empty()) << "down but still armed: not over";
+    EXPECT_FALSE(m.finished());
+    EXPECT_TRUE(at(m, 40.0, false, 0.03).empty());
+    EXPECT_TRUE(m.finished());
+    EXPECT_FALSE(m.passed());
+    EXPECT_EQ(m.abort_outcome(), FlightMission::AbortOutcome::landed_and_disarmed);
+    const FlightCheck* a = check(m, "abort_landed_disarmed_s");
+    ASSERT_NE(a, nullptr);
+    EXPECT_TRUE(a->pass);
+    EXPECT_NEAR(a->measured, 11.0, 1e-9) << "from the abort (29.0) to landed and disarmed (40.0)";
+    EXPECT_EQ(a->limit, 30.0);
+    EXPECT_TRUE(m.landed());
+    EXPECT_FALSE(m.last_armed());
+    EXPECT_NEAR(m.last_altitude_m(), 0.03, 1e-9);
+}
+
+TEST(FcLinkFlight, AnAbortWhoseBoundExpiresIsRecordedWithTheVehiclesStateAndStillEnds) {
+    FlightMission m = aborting_mission();
+    EXPECT_TRUE(drive(m, 29.1, 60.0, [](double) { return std::pair{true, 1.0}; }).empty());
+    EXPECT_TRUE(m.finished());
+    EXPECT_FALSE(m.passed());
+    EXPECT_EQ(m.abort_outcome(), FlightMission::AbortOutcome::expired);
+    const FlightCheck* a = check(m, "abort_landed_disarmed_s");
+    ASSERT_NE(a, nullptr);
+    EXPECT_FALSE(a->pass);
+    EXPECT_NEAR(a->measured, 30.0, 0.05);
+    EXPECT_NEAR(a->time_s, 59.0, 0.05);
+    EXPECT_TRUE(m.last_armed());
+    EXPECT_FALSE(m.landed());
+    EXPECT_NEAR(m.last_altitude_m(), 1.0, 1e-9);
+}
+
+TEST(FcLinkFlight, AFailureBeforeLiftOffJustEndsAndSendsNoLand) {
+    FlightMission m(config());
+    ASSERT_EQ(at(m, 20.0, false, 0.0).size(), 1u);
+    EXPECT_TRUE(at(m, 20.2, false, 0.0, AckObservation{kArm, 2}).empty());
+    EXPECT_TRUE(m.finished());
+    EXPECT_EQ(m.abort_outcome(), FlightMission::AbortOutcome::none) << "nothing was in the air";
+    EXPECT_EQ(m.last_altitude_m(), 0.0);
+    EXPECT_FALSE(m.last_armed());
 }

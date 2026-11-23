@@ -57,7 +57,9 @@ struct FlightCheck {
 
 class FlightMission {
 public:
-    enum class Phase { boot, arming, takeoff, settle, hover, land, done, failed };
+    enum class Phase { boot, arming, takeoff, settle, hover, land, aborting, done, failed };
+    // How an abort ended: it has not happened (none), the vehicle was landed and disarmed (landed_and_disarmed), or the bound expired first (expired).
+    enum class AbortOutcome { none, landed_and_disarmed, expired };
 
     explicit FlightMission(const FlightConfig& config = {}) : config_(config) {}
 
@@ -68,6 +70,13 @@ public:
     [[nodiscard]] bool finished() const { return phase_ == Phase::done || phase_ == Phase::failed; }
     [[nodiscard]] bool passed() const { return phase_ == Phase::done; }
     [[nodiscard]] const std::vector<FlightCheck>& journal() const { return journal_; }
+    // A failed check once the vehicle is armed (the takeoff sent) ABORTS TO LAND: LAND is sent at once and the mission waits up to land_timeout_s for
+    // landed AND disarmed before it ends (never passed). A failure before that (arm denied, arm timed out) only ends: nothing is in the air.
+    [[nodiscard]] AbortOutcome abort_outcome() const { return AbortOutcome::none; }  // RED
+    // The last observation: armed, the altitude, and landed (below landed_height_m and disarmed): what the report prints when a run stops.
+    [[nodiscard]] bool last_armed() const { return false; }         // RED
+    [[nodiscard]] double last_altitude_m() const { return 0.0; }    // RED
+    [[nodiscard]] bool landed() const { return false; }             // RED
 
 private:
     FlightConfig config_;
