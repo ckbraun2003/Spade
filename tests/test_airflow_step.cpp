@@ -370,7 +370,9 @@ TEST(AirflowAllocation, EveryCpuEntryThatAllocatesRefusesAFailedAllocationByName
         EXPECT_NE(e.context.find("out of memory"), std::string::npos) << entry << ": " << e.context;
         EXPECT_NE(e.context.find(stage), std::string::npos) << entry << ": the stage is named: " << e.context;
         EXPECT_NE(e.context.find("8 x 8 x 8"), std::string::npos) << entry << ": the grid is named: " << e.context;
-        if (bytes != 0) EXPECT_NE(e.context.find(std::to_string(bytes)), std::string::npos) << entry << ": the bytes are named: " << e.context;
+        if (bytes != 0) {
+            EXPECT_NE(e.context.find(std::to_string(bytes)), std::string::npos) << entry << ": the bytes are named: " << e.context;
+        }
     };
 
     const af::ScopedAllocationLimit limit(1);  // every allocation over one byte is refused, as an exhausted machine would
