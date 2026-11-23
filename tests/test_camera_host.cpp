@@ -249,7 +249,7 @@ TEST(CameraHost, ASimulationRestoredWithoutTheHostsStateIsRefusedByNameAtTheNext
     ASSERT_TRUE(host->step(10).has_value());
 
     ASSERT_TRUE(rig->sim.restore(*blob).has_value());
-    const spade::Result<StepReport> refused = host->step(1);
+    const spade::Result<spade::StepReport> refused = host->step(1);
     ASSERT_FALSE(refused.has_value()) << "the Simulation went back to tick 10 behind the host's back";
     EXPECT_EQ(refused.error().code, spade::Code::invalid_argument);
     EXPECT_NE(refused.error().context.find("the simulation was restored without the camera host's state"), std::string::npos) << refused.error().context;
@@ -260,7 +260,7 @@ TEST(CameraHost, ASimulationRestoredWithoutTheHostsStateIsRefusedByNameAtTheNext
 
     // a Simulation that moved FORWARD behind the host's back is the same mistake
     ASSERT_TRUE(rig->sim.step(3).has_value());
-    const spade::Result<StepReport> ahead = host->step(1);
+    const spade::Result<spade::StepReport> ahead = host->step(1);
     ASSERT_FALSE(ahead.has_value());
     EXPECT_NE(ahead.error().context.find("restored without the camera host's state"), std::string::npos) << ahead.error().context;
 }
