@@ -346,6 +346,7 @@ add_executable(spade_tests
     test_fc_link_ardupilot_udp.cpp
     test_autopilot_map.cpp
     test_x500_contact_model.cpp
+    test_installed_layout.cpp
     test_sensor_profiles.cpp
     test_openframe5f_build_table.cpp
     test_flow_movie_particles.cpp

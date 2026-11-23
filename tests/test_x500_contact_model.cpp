@@ -59,7 +59,7 @@ namespace sc = spade::scene;
 namespace x500 = spade::test::x500;
 
 constexpr std::string_view kOriginalFile = "tools/flow_movie/data/x500/x500.model.yaml";
-constexpr std::string_view kContactFile = "tools/flow_movie/data/x500/x500_contact.model.yaml";
+constexpr std::string_view kContactFile = "assets/models/x500_contact.model.yaml";
 constexpr std::string_view kContactName = "x500_contact";
 
 // x500.model.yaml as committed (the posted film pins it): fnv1a64 and byte count of its text with every CR removed, measured on the file at master 2fb01194.
