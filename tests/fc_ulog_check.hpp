@@ -52,12 +52,30 @@ struct UlogResult {
     uint64_t dropouts = 0;       // O messages
     uint64_t unknown_messages = 0;  // messages of a type the spec's list lacks, skipped (framing intact)
     std::string unknown_types;      // those types, once each, as 'Z' or 0x01
+    // The simulated-time span, read from the FIRST field of every data message whose format declares it `uint64_t timestamp` (the spec's rule for
+    // logged data). A stamp of 0 (a message published with the field never set) is counted per format and kept OUT of the span; a format whose first
+    // field is not that is counted as "not timed" and not read. The header's start time is NOT used (it is the logger's start, not the data's).
+    bool has_time = false;           // at least one nonzero stamp was read
+    uint64_t first_stamp_us = 0;     // the smallest nonzero stamp
+    uint64_t last_stamp_us = 0;      // the largest nonzero stamp
+    uint64_t timed_messages = 0;     // D messages of a format whose first field is `uint64_t timestamp`
+    uint64_t zero_stamps = 0;        // of those, stamped 0
+    std::string zero_formats;        // "name n, name n" for the formats that carried a 0 stamp
+    uint64_t untimed_messages = 0;   // D messages of a format whose first field is not `uint64_t timestamp`
+    std::string untimed_formats;     // those formats, once each
+    uint64_t header_start_us = 0;    // the header's u64 (reported, never used as the span's start)
 };
 
 namespace ulog_detail {
 
 [[nodiscard]] inline uint16_t rd16(std::string_view b, size_t at) {
     return static_cast<uint16_t>(static_cast<uint8_t>(b[at]) | (static_cast<uint16_t>(static_cast<uint8_t>(b[at + 1])) << 8));
+}
+
+[[nodiscard]] inline uint64_t rd64(std::string_view b, size_t at) {
+    uint64_t v = 0;
+    for (size_t i = 0; i < 8; ++i) v |= static_cast<uint64_t>(static_cast<uint8_t>(b[at + i])) << (8 * i);
+    return v;
 }
 
 [[nodiscard]] inline bool valid_format_name_char(char c) {
@@ -101,6 +119,10 @@ namespace ulog_detail {
     bool first = true;
     std::set<std::string> formats;
     std::map<uint16_t, bool> subscribed;
+    std::map<std::string, bool> timed;                 // format name -> its first field is `uint64_t timestamp`
+    std::map<uint16_t, std::string> subscribed_name;   // message id -> format name
+    std::map<std::string, uint64_t> zero_by_format;
+    r.header_start_us = rd64(b, 8);
     while (pos < b.size()) {
         if (b.size() - pos < 3) return bad("a message header is cut off by the end of the file", pos);
         const size_t size = rd16(b, pos);
@@ -148,6 +170,11 @@ namespace ulog_detail {
             case 'F':
                 if (format_name_of(m).empty()) return bad("a format message that is not `name:field;...` with a valid name", pos);
                 formats.insert(format_name_of(m));
+                {
+                    const size_t colon = m.find(':');
+                    const size_t semi = m.find(';', colon);
+                    timed[format_name_of(m)] = m.substr(colon + 1, semi - colon - 1) == "uint64_t timestamp";
+                }
                 break;
             case 'I':
             case 'P':
@@ -168,6 +195,7 @@ namespace ulog_detail {
                 if (formats.count(std::string(m.substr(3))) == 0) return bad("a subscription (message id " + std::to_string(id) + ") to a format the file did not define", pos);
                 if (subscribed.count(id) != 0) return bad("message id " + std::to_string(id) + " is subscribed twice", pos);
                 subscribed[id] = true;
+                subscribed_name[id] = std::string(m.substr(3));
                 ++r.subscriptions;
                 break;
             }
@@ -179,6 +207,23 @@ namespace ulog_detail {
                 const uint16_t id = rd16(m, 0);
                 if (subscribed.count(id) == 0) return bad("a data message for message id " + std::to_string(id) + ", which was not subscribed", pos);
                 ++r.data_messages;
+                const std::string& fname = subscribed_name[id];
+                if (!timed[fname]) {
+                    ++r.untimed_messages;
+                    if (r.untimed_formats.find(fname) == std::string::npos) r.untimed_formats += (r.untimed_formats.empty() ? "" : ", ") + fname;
+                    break;
+                }
+                if (size < 10) return bad("a data message of " + std::to_string(size) + " bytes for a format that starts with a 64-bit timestamp, under 10", pos);
+                const uint64_t ts = rd64(m, 2);
+                ++r.timed_messages;
+                if (ts == 0) {
+                    ++r.zero_stamps;
+                    ++zero_by_format[fname];
+                } else {
+                    if (!r.has_time || ts < r.first_stamp_us) r.first_stamp_us = ts;
+                    if (!r.has_time || ts > r.last_stamp_us) r.last_stamp_us = ts;
+                    r.has_time = true;
+                }
                 break;
             }
             case 'L':
@@ -205,6 +250,7 @@ namespace ulog_detail {
     }
     if (first) return bad("the file holds no messages after the header", 16);
     if (r.data_messages == 0) return bad("the log holds no data message", b.size());
+    for (const auto& [name, n] : zero_by_format) r.zero_formats += (r.zero_formats.empty() ? "" : ", ") + name + " " + std::to_string(n);
     if (r.unknown_messages > 0) {
         r.kind = UlogResult::Kind::unread;
         r.detail = "unread: unknown message type " + r.unknown_types + " (" + std::to_string(r.unknown_messages) +

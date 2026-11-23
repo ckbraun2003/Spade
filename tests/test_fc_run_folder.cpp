@@ -153,7 +153,7 @@ TEST(FcRunFolder, TheGoodBudgetFolderPassesEveryImplementedCheckAndNamesWhatIsUn
         EXPECT_NE(c.verdict, Verdict::fail) << c.id << ": " << c.detail;
         EXPECT_NE(c.verdict, Verdict::absent) << c.id << ": " << c.detail;
     }
-    EXPECT_EQ(unchecked, (std::set<std::string>{"K4.log", "K6.recount", "K11.replay"})) << r.text();
+    EXPECT_EQ(unchecked, (std::set<std::string>{"K4.log", "K4.span", "K6.recount", "K11.replay"})) << r.text();
     for (const char* id : {"K1", "K2", "K3", "K5", "K6", "K7", "K9", "K10"}) {
         const auto* c = r.find(id, Verdict::pass);
         EXPECT_NE(c, nullptr) << id << " has no passing result\n" << r.text();
@@ -676,7 +676,7 @@ TEST(FcRunFolder, TheTraceAndCommandsOfCoresSampleRunAreRecomputedAndAgree) {
     std::set<std::string> unchecked;
     for (const auto& c : r.results)
         if (c.verdict == Verdict::unchecked) unchecked.insert(c.id);
-    EXPECT_EQ(unchecked, (std::set<std::string>{"K4.log", "K6.recount", "K11.replay"}));
+    EXPECT_EQ(unchecked, (std::set<std::string>{"K4.log", "K4.span", "K6.recount", "K11.replay"}));
 }
 
 TEST(FcRunFolder, TheLoaderReadsAFolderFromDiskAndTheVerdictIsTheSame) {
@@ -858,6 +858,136 @@ TEST(FcRunFolder, K4_TheLogIsReadFromTheFolderAndAMalformedOneFailsTheCheck) {
     EXPECT_NE(none.find("K4.log", Verdict::unchecked), nullptr) << none.text();
 }
 
+// K4.span: the log's simulated-time span against the run's simulated time. The stamp is the FIRST field of a data message whose format declares it
+// `uint64_t timestamp`; a 0 is counted per format and kept out of the span; a format that does not start that way is counted "not timed".
+namespace {
+
+[[nodiscard]] std::string timed_d(uint16_t id, uint64_t t, size_t extra = 16) {
+    std::string d;
+    ux::put16(d, id);
+    ux::put64(d, t);
+    d += std::string(extra, '\0');
+    return d;
+}
+
+[[nodiscard]] const spade::fc::CheckResult* span_of(const Report& r) {
+    for (const auto& c : r.results)
+        if (c.id == "K4.span") return &c;
+    return nullptr;
+}
+
+[[nodiscard]] Report check_with(const std::string& log, std::optional<uint64_t> sim_us) {
+    return spade::fc::check_run_folder(spade::fc::RunFolder{good_measured(), log, sim_us});
+}
+
+}  // namespace
+
+TEST(FcRunFolder, K4_TheSpanIsReadFromTheFirstFieldStampsZerosCountedNotUsedUntimedCounted) {
+    using namespace ux;
+    std::vector<Msg> v = good_messages();  // gyro 1000, status 4000, gyro 5000
+    v.insert(v.begin() + kFStatus + 1, Msg{'F', "weird:uint32_t count;uint64_t timestamp;"});  // not timed: the stamp is not the first field
+    std::string a2(1, '\0');
+    put16(a2, 2);
+    a2 += "weird";
+    v.insert(v.begin() + kSubStatus + 1, Msg{'A', a2});
+    v.push_back({'D', timed_d(0, 0)});                                  // a gyro message stamped 0
+    v.push_back({'D', timed_d(0, 0)});                                  // and another
+    v.push_back({'D', std::string("\x02\x00\x07\x00\x00\x00\x09\x00\x00\x00\x00\x00\x00\x00", 14)});  // a `weird` message
+    const UlogResult r = read_msgs(v);
+    ASSERT_EQ(r.kind, UlogResult::Kind::well_formed) << r.detail;
+    EXPECT_TRUE(r.has_time);
+    EXPECT_EQ(r.first_stamp_us, 1000u);
+    EXPECT_EQ(r.last_stamp_us, 5000u);
+    EXPECT_EQ(r.timed_messages, 5u);
+    EXPECT_EQ(r.zero_stamps, 2u);
+    EXPECT_EQ(r.zero_formats, "sensor_gyro 2");
+    EXPECT_EQ(r.untimed_messages, 1u);
+    EXPECT_EQ(r.untimed_formats, "weird");
+    EXPECT_EQ(r.header_start_us, 316000u) << "the header's start time is reported";
+    EXPECT_NE(r.header_start_us, r.first_stamp_us) << "and it is not the span's start";
+
+    const Report folder = check_with(assemble(v), 5000);
+    const auto* span = span_of(folder);
+    ASSERT_NE(span, nullptr) << folder.text();
+    EXPECT_EQ(span->verdict, Verdict::pass) << span->detail;
+    EXPECT_NE(span->detail.find("gap 0 us"), std::string::npos) << span->detail;
+    EXPECT_NE(span->detail.find("1000 to 5000 us over 3 messages"), std::string::npos) << span->detail;
+    EXPECT_NE(span->detail.find("2 stamped 0 and left out (sensor_gyro 2)"), std::string::npos) << span->detail;
+    EXPECT_NE(span->detail.find("1 not timed (weird)"), std::string::npos) << span->detail;
+}
+
+TEST(FcRunFolder, K4_TheSpanMustEndAtTheRunsTimeNeverAfterAndNotFarBefore) {
+    const std::string log = ux::assemble(ux::good_messages());  // the last stamp is 5000
+    const auto verdict = [&](uint64_t sim) {
+        const Report r = check_with(log, sim);
+        const auto* s = span_of(r);
+        return s != nullptr ? s->verdict : Verdict::absent;
+    };
+    EXPECT_EQ(verdict(5000), Verdict::pass);
+    EXPECT_EQ(verdict(5000 + 100'000), Verdict::pass) << "a log may end 100 ms before the run's last time";
+    EXPECT_EQ(verdict(5000 + 100'001), Verdict::fail) << "one microsecond more is a log that ended early";
+    EXPECT_EQ(verdict(4999), Verdict::fail) << "a log cannot hold a time that had not come";
+    const Report early = check_with(log, 5000 + 250'000);
+    ASSERT_NE(span_of(early), nullptr);
+    EXPECT_NE(span_of(early)->detail.find("250000 us before"), std::string::npos) << span_of(early)->detail;
+    EXPECT_FALSE(early.ok()) << early.text();
+    const Report late = check_with(log, 4000);
+    EXPECT_NE(span_of(late)->detail.find("1000 us AFTER"), std::string::npos) << span_of(late)->detail;
+    EXPECT_FALSE(late.ok()) << late.text();
+}
+
+TEST(FcRunFolder, K4_TheSpanIsUncheckedWhenItCannotBeCompared) {
+    using namespace ux;
+    // no simulated time given
+    EXPECT_EQ(span_of(check_with(assemble(good_messages()), std::nullopt))->verdict, Verdict::unchecked);
+    // no log given
+    const Report none = spade::fc::check_run_folder(spade::fc::RunFolder{good_measured(), std::nullopt, 5000});
+    ASSERT_NE(span_of(none), nullptr);
+    EXPECT_EQ(span_of(none)->verdict, Verdict::unchecked);
+    // a log with an unknown type is unread, so its stamps were not read
+    std::vector<Msg> unk = good_messages();
+    unk.insert(unk.begin() + kSubGyro, Msg{'Z', "x"});
+    EXPECT_EQ(span_of(check_with(assemble(unk), 5000))->verdict, Verdict::unchecked);
+    // a malformed log fails K4.log; its span is not also failed
+    const std::string good = assemble(good_messages());
+    EXPECT_EQ(span_of(check_with(good.substr(0, good.size() - 3), 5000))->verdict, Verdict::unchecked);
+    // only zero stamps: no span
+    std::vector<Msg> zeros = good_messages();
+    zeros[kDataGyro0].body = timed_d(0, 0);
+    zeros[kDataStatus].body = timed_d(1, 0, 1);
+    zeros[kDataGyro1].body = timed_d(0, 0);
+    const UlogResult r = read_msgs(zeros);
+    ASSERT_EQ(r.kind, UlogResult::Kind::well_formed) << r.detail;
+    EXPECT_FALSE(r.has_time);
+    const Report zero_folder = check_with(assemble(zeros), 5000);
+    const auto* span = span_of(zero_folder);
+    ASSERT_NE(span, nullptr);
+    EXPECT_EQ(span->verdict, Verdict::unchecked);
+    EXPECT_NE(span->detail.find("nonzero timestamp"), std::string::npos) << span->detail;
+}
+
+TEST(FcRunFolder, K4_ADataMessageTooShortForItsTimestampIsMalformed) {
+    using namespace ux;
+    std::vector<Msg> v = good_messages();
+    v[kDataGyro1].body = std::string("\x00\x00\x01\x02\x03", 5);  // id 0 and 3 bytes of a 64-bit stamp
+    const UlogResult r = read_msgs(v);
+    EXPECT_EQ(r.kind, UlogResult::Kind::malformed) << r.detail;
+    EXPECT_NE(r.detail.find("under 10"), std::string::npos) << r.detail;
+}
+
+TEST(FcRunFolder, K4_TheRunsSimulatedTimeIsReadFromTheLockstepReport) {
+    using spade::fc::last_time_usec_of;
+    EXPECT_EQ(last_time_usec_of("steps_done: 10000\nlast_time_usec: 40032000\nboot_steps: 8\n"), std::optional<uint64_t>(40032000));
+    EXPECT_EQ(last_time_usec_of("last_time_usec: 7\r\nx: 1\r\n"), std::optional<uint64_t>(7));
+    EXPECT_EQ(last_time_usec_of("last_time_usec:   12  "), std::optional<uint64_t>(12));
+    EXPECT_FALSE(last_time_usec_of("steps_done: 1\n").has_value());
+    EXPECT_FALSE(last_time_usec_of("last_time_usec: \n").has_value());
+    EXPECT_FALSE(last_time_usec_of("last_time_usec: 12x\n").has_value());
+    EXPECT_FALSE(last_time_usec_of("last_time_usec: -5\n").has_value());
+    EXPECT_FALSE(last_time_usec_of("last_time_usec: 99999999999999999999\n").has_value()) << "too many digits";
+    EXPECT_FALSE(last_time_usec_of("not_last_time_usec: 5\n").has_value()) << "the key is the line's start";
+}
+
 // A real PX4 log: SPADE_FC_ULOG names a .ulg file (for example one a live fc run left in px4-log/); unset, the case skips by name, so the 12 MB logs of
 // the live runs are never committed. It checks the reader against the real thing, including the message types and sizes the spec page extract lacked.
 TEST(FcRunFolder, TheRealPx4LogIsWellFormed) {
@@ -869,4 +999,37 @@ TEST(FcRunFolder, TheRealPx4LogIsWellFormed) {
     const UlogResult r = spade::fc::read_ulog(bytes);
     std::cout << "SPADE_FC_ULOG: " << bytes.size() << " bytes: " << r.detail << "\n";
     EXPECT_EQ(r.kind, UlogResult::Kind::well_formed) << r.detail;
+}
+
+// The same real log against its run's lockstep report: SPADE_FC_ULOG and SPADE_FC_LOCKSTEP_REPORT (the run folder's lockstep-report.txt); either unset, skipped by name.
+namespace {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)  // getenv
+#endif
+[[nodiscard]] std::string lockstep_report_env_path() {
+    const char* v = std::getenv("SPADE_FC_LOCKSTEP_REPORT");
+    return v != nullptr ? std::string(v) : std::string();
+}
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+}  // namespace
+
+TEST(FcRunFolder, TheRealPx4LogCoversTheRunsSimulatedTime) {
+    const std::string log_path = ulog_env_path();
+    const std::string report_path = lockstep_report_env_path();
+    if (log_path.empty() || report_path.empty()) GTEST_SKIP() << "SPADE_FC_ULOG and SPADE_FC_LOCKSTEP_REPORT are not both set";
+    std::ifstream lin(log_path, std::ios::binary);
+    std::ifstream rin(report_path, std::ios::binary);
+    ASSERT_TRUE(lin.good() && rin.good());
+    const std::string log((std::istreambuf_iterator<char>(lin)), std::istreambuf_iterator<char>());
+    const std::string report((std::istreambuf_iterator<char>(rin)), std::istreambuf_iterator<char>());
+    const auto sim = spade::fc::last_time_usec_of(report);
+    ASSERT_TRUE(sim.has_value()) << "the report holds no last_time_usec";
+    const Report folder = check_with(log, sim);
+    const auto* span = span_of(folder);
+    ASSERT_NE(span, nullptr);
+    std::cout << "K4.span: " << span->detail << "\n";
+    EXPECT_EQ(span->verdict, Verdict::pass) << span->detail;
 }

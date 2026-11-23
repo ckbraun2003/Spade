@@ -91,11 +91,44 @@ struct Report {
 struct RunFolder {
     Files files;
     std::optional<std::string> autopilot_log;
+    // The run's simulated time at its last step, in microseconds: `last_time_usec` of the run's lockstep report (see last_time_usec_of). It is
+    // not in the record either, so the caller gives it; with none, K4.span stays unchecked.
+    std::optional<uint64_t> simulated_time_us;
 
     // Constructors, not aggregate initialisation: gcc's -Werror=missing-field-initializers refuses `RunFolder{files}` with the log left out.
     RunFolder() = default;
-    RunFolder(Files f, std::optional<std::string> log = std::nullopt) : files(std::move(f)), autopilot_log(std::move(log)) {}
+    RunFolder(Files f, std::optional<std::string> log = std::nullopt, std::optional<uint64_t> sim_us = std::nullopt)
+        : files(std::move(f)), autopilot_log(std::move(log)), simulated_time_us(sim_us) {}
 };
+
+// `last_time_usec: <n>` from a lockstep report's text (the report fc-live writes beside the record): the run's simulated time at its last step.
+[[nodiscard]] inline std::optional<uint64_t> last_time_usec_of(std::string_view report) {
+    constexpr std::string_view key = "last_time_usec:";
+    for (size_t at = 0; at < report.size();) {
+        const size_t nl = report.find('\n', at);
+        const size_t end = nl == std::string_view::npos ? report.size() : nl;
+        std::string_view line = report.substr(at, end - at);
+        if (line.substr(0, key.size()) == key) {
+            line.remove_prefix(key.size());
+            while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) line.remove_prefix(1);
+            while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.remove_suffix(1);
+            if (line.empty() || line.size() > 19) return std::nullopt;
+            uint64_t v = 0;
+            for (const char c : line) {
+                if (c < '0' || c > '9') return std::nullopt;
+                v = v * 10 + static_cast<uint64_t>(c - '0');
+            }
+            return v;
+        }
+        at = end + 1;
+    }
+    return std::nullopt;
+}
+
+// How far below the run's simulated time the log's last stamp may end: 25 steps of 4 ms. The logger may flush its last write behind the final step.
+// The two real runs end exactly on it (a gap of 0 us), so the bound is a guess of mine that the data do not test; the gap is always printed, so a
+// run that drifts shows it before it fails. Above the run's time is never allowed: a log cannot hold a time that had not come.
+inline constexpr uint64_t kLogEndsBeforeRunUs = 100'000;
 
 // ----- a small reader for the flat YAML the record uses -----------------------------------------------------------------------------
 
@@ -519,8 +552,29 @@ inline Report check_run_folder(const RunFolder& folder) {
     if (folder.autopilot_log.has_value()) {
         const UlogResult u = read_ulog(*folder.autopilot_log);
         add("K4.log", u.kind == UlogResult::Kind::well_formed ? Verdict::pass : (u.kind == UlogResult::Kind::unread ? Verdict::unchecked : Verdict::fail), u.detail);
+        if (u.kind != UlogResult::Kind::well_formed) {
+            add("K4.span", Verdict::unchecked, "the log was not read to its end, so its stamps were not read");
+        } else if (!folder.simulated_time_us.has_value()) {
+            add("K4.span", Verdict::unchecked, "no simulated time was given (the run's lockstep report holds it as last_time_usec)");
+        } else if (!u.has_time) {
+            add("K4.span", Verdict::unchecked, "the log holds no data message with a nonzero timestamp, so there is no span to compare");
+        } else {
+            const uint64_t sim = *folder.simulated_time_us;
+            const std::string facts = "log stamps " + std::to_string(u.first_stamp_us) + " to " + std::to_string(u.last_stamp_us) + " us over " +
+                                      std::to_string(u.timed_messages - u.zero_stamps) + " messages; the run's last time " + std::to_string(sim) + " us; " +
+                                      std::to_string(u.zero_stamps) + " stamped 0 and left out" + (u.zero_formats.empty() ? "" : " (" + u.zero_formats + ")") + "; " +
+                                      std::to_string(u.untimed_messages) + " not timed" + (u.untimed_formats.empty() ? "" : " (" + u.untimed_formats + ")");
+            if (u.last_stamp_us > sim) {
+                add("K4.span", Verdict::fail, "the log's last stamp is " + std::to_string(u.last_stamp_us - sim) + " us AFTER the run's last time: " + facts);
+            } else if (sim - u.last_stamp_us > kLogEndsBeforeRunUs) {
+                add("K4.span", Verdict::fail, "the log ends " + std::to_string(sim - u.last_stamp_us) + " us before the run's last time (over " + std::to_string(kLogEndsBeforeRunUs) + " us): " + facts);
+            } else {
+                add("K4.span", Verdict::pass, "gap " + std::to_string(sim - u.last_stamp_us) + " us (the log's last stamp to the run's last time): " + facts);
+            }
+        }
     } else {
         add("K4.log", Verdict::unchecked, "no autopilot log was given to the checker (it lives beside the record, not in it)");
+        add("K4.span", Verdict::unchecked, "no autopilot log was given to the checker");
     }
 
     // K5: the copies match their hashes; the mode is one of two; a measured run names its box and tree.
