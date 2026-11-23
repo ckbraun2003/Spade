@@ -46,8 +46,9 @@ struct CamRig {
     const spade::Result<spade::WorldSetDesc> set = fc_host_test::still_world();
     if (!set) return std::nullopt;
     spade::WorldSetDesc desc = *set;
-    // the fc rig's world declares no camera capacity: rebuild its capacities with cameras
-    // (the draft leaves this to the real test: still_world gains a cameras parameter)
+    // the fc rig's world declares no cameras (3.2's capacity admission refuses one): declare room for four 64 x 48 cameras
+    desc.worlds[0].world.capacities.cameras = 4;
+    desc.worlds[0].world.capacities.camera_pixels = 4 * 64 * 48;
     spade::Result<spade::Simulation> sim = spade::Simulation::create(desc, 2'000'000, 2, {}, standard_plus_camera());
     if (!sim) return std::nullopt;
     const spade::Result<spade::BodyRef> body = sim->spawn(0, spade::BodySpawn{});
