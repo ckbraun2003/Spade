@@ -64,6 +64,7 @@ add_executable(spade_tests
     test_core_build_identity.cpp
     test_core_utf8.cpp
     test_path_text.cpp
+    test_fpv_trim.cpp
     test_unique_temp.cpp
     test_fatal_report.cpp
     test_sdf.cpp
