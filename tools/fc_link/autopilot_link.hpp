@@ -46,6 +46,9 @@ struct ExchangeConfig {
     std::optional<uint32_t> gnss_binding;
     std::optional<geo::LocalFrame> geo_frame;
     glm::dvec3 home_world{0.0};
+    // The boot messages' noise stream (the host's BootConfig): the caller's. The defaults are Core's; a flight run sets the barometer's and magnetometer's
+    // sigmas from the same profile as its world (tests/fc_flight_world.hpp flight_boot_config), so one source says how noisy those two sensors are.
+    fc_host::BootConfig boot{};
 };
 
 struct ExchangeResult {

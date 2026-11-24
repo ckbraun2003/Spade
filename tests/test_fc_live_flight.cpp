@@ -129,6 +129,7 @@ TEST(FcLiveFlight, Px4FliesTheX500ThroughArmTakeoffHoverAndLand) {
     cfg.baro_binding = fc_flight_test::kBaroBinding;  // where each sensor sits, and the home, live in the hashed world header (tests/fc_flight_world.hpp)
     cfg.mag_binding = fc_flight_test::kMagBinding;
     cfg.gnss_binding = fc_flight_test::kGnssBinding;
+    cfg.boot = fc_flight_test::flight_boot_config();  // the boot messages' baro and mag noise is the world's: one source
     cfg.geo_frame = spade::geo::make_local_frame(spade::geo::Geodetic{fc_flight_test::kHomeLat, fc_flight_test::kHomeLon, fc_flight_test::kGroundAmslM});
     cfg.home_world = glm::dvec3(0.0);  // the ground under the vehicle's start is the autopilot's NED origin
     auto alink = AutopilotLink::create(
