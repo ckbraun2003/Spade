@@ -264,6 +264,14 @@ $machine = [ordered]@{
 $sourceHead = ''
 try { $sourceHead = (& git -C $root rev-parse HEAD 2>$null) } catch { $sourceHead = '' }
 
+# The path as recorded in capture.json: relative to the repository root with forward slashes when the file is under it; otherwise only the file's name.
+function Get-RecordedPath([string] $path) {
+    $full = [IO.Path]::GetFullPath($path)
+    $base = [IO.Path]::GetFullPath($root).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+    if ($full.StartsWith($base, [StringComparison]::OrdinalIgnoreCase)) { return $full.Substring($base.Length).Replace('\', '/') }
+    return [IO.Path]::GetFileName($full)
+}
+
 function Invoke-Scene($p) {
     $dir = Join-Path $OutDir (Join-Path $p.Tool $p.Name)
     if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
@@ -272,7 +280,8 @@ function Invoke-Scene($p) {
     $stdout = Join-Path $dir 'stdout.txt'
 
     $rec = [ordered]@{
-        scene = $p.Name; tool = $p.Tool; exe = $exe
+        # L-S34 (2026-11-23): the record names the program relative to the repository root, never a host folder (a capture can no longer put a user folder in a tracked file).
+        scene = $p.Name; tool = $p.Tool; exe = (Get-RecordedPath $exe)
         exe_sha256 = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLower()
         exe_mtime = (Get-Item $exe).LastWriteTimeUtc.ToString('o')
         args = $p.Args; source_head = $sourceHead; machine = $machine
