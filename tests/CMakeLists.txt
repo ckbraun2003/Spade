@@ -566,6 +566,7 @@ if(SPADE_VULKAN)
         test_gpu_airflow_line_stills.cpp
         test_gpu_x500_one_rotor.cpp
         test_gpu_fpv_four_rotors.cpp
+        test_gpu_fpv_trim.cpp
         test_gpu_airflow_d1_device.cpp
         test_gpu_live_fluid.cpp
         test_gpu_live_lines.cpp
