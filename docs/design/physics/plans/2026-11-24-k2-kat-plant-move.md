@@ -80,8 +80,29 @@ RED first, each term CPU and GPU twin where a twin exists, and a pin for every c
 
 About **10 to 11 working days** for Physics, plus Core's review of the new model-file keys (`command_delay_ticks`, `omega_max`, the thrust table, the two switches) and the SDK's airframe data. The order matches the dependence: 1, 2, 4, 5, 3, 6.
 
-## 9. Open points for the lead
+## 9. Decided (lead, 2026-11-24) and what is still open
 
-1. The throttle-to-thrust table's home: a new `ModelType` row type (Core's format) or the part file's existing curves? I propose a per-vehicle table in the model file, one for all motors (KAT's airframes have one curve).
-2. `command_delay_ticks` is a per-vehicle integer in the model data with a per-episode override through the same door KAT's domain randomisation uses for tau and drag: confirm that door exists on Spade's side (SDK's inventory names the values, not the door).
-3. Which substep count the parity runs use (1, per the P0-3 record): 100 Hz KAT jobs at substeps 1 mean Spade steps at 10 ms, so the explicit-Euler angular update's error is larger there; the band formula reports it by N and h, and the 100 Hz jobs are a separate parity row.
+**Decided:**
+
+1. **The throttle table:** per vehicle, in the model file, one table for all motors (KAT's airframes have one curve). It is `ModelType` data, so Core reviews the format in the RED; it is static data, not registered state.
+2. **Substeps:** parity at substeps 1, per the P0-3 record. The 100 Hz KAT jobs are a separate parity row whose band reports N and h (section 7).
+3. **tau 0:** `w = w_cmd` is assigned when alpha == 1, in the CPU pass and its GPU twin. **No digest moves for any run with tau > 0**, and it is proved, not asserted: the existing rotor parity rows and every pinned digest that touches a rotor are run unedited at the slice's head and quoted equal; the only rows allowed to change are those of a rotor with tau <= 0, and they are listed in the commit message before any re-recording.
+4. **ARMED:** the per-vehicle flag is new registered state (a snapshot carries it).
+
+**Open, and the finding that changes the lead's rule for it: the per-episode door.** The lead's rule was: if KAT starts an episode on Spade by a respawn, the door is spawn-time overrides on `VehicleSpawn` and no setter is built; if by a restore, the values must be registered per-vehicle state set once after the restore. Read from KAT at 2582f5f85 (read-only): **`kathost_reset` is both.** It is `Simulation::restore(genesisBlob)` (the empty-roster snapshot captured at the tail of `kathost_load_world`, `dronesim/spade/host.cpp:3232`), then a replay of every still-live roster entry's **original** spawn call through `spawnBodyFromDesc()` (the same function `kathost_spawn` uses, `host.cpp:29`, `:1758`, replay loop `:3761-3784`), then `reseed(scene_seed)` (`host.cpp:10-30`, `:3696-3712`). The roster is preserved (ids stable, never reused). So an episode start is a RESPAWN from the entry's STORED original descriptor, which means a per-episode draw (the delay ticks, tau and the drag coefficients the SDK's domain randomisation draws, `rollout.cpp:849-857` shows the SDK side resetting its own plant state on the reset epoch) cannot ride a spawn call: the replay re-applies the original descriptor, not today's draw. Three ways to carry a draw, for the lead and Spade Host to choose; I recommend (a) if spawn cost per episode is small:
+   - (a) the SDK despawns and respawns the vehicle each episode with the drawn values in the descriptor (no new Spade code; the vehicle's id changes, so the roster-preserved rule is not available for it);
+   - (b) the adapter keeps per-entry episode overrides, set by a new ABI call and replayed after the spawn at reset (a new setter on the adapter and on the vehicle: registered state, snapshot-exact; the most code);
+   - (c) no per-episode draw on Spade's side (the values are constant per package and KAT's domain randomisation of them stays in its own plant); only possible while the rate-thrust lane runs through KAT's plant for those terms, which is the opposite of the move.
+   What I need from Spade Host: the cost of a `kathost_spawn` of a vehicle (a respawn per episode), and whether an override set before `kathost_reset` could be replayed from the roster entry without an ABI change.
+
+## 10. Dates (estimates against the 10 to 11 working days of section 8; GPU and build queue waits are not in them)
+
+K2's code starts after the trim record and the film branch's READY (the trim re-run started 16:07Z and settles in about an hour). Day 1 is the day after the film branch is READY.
+
+| slice | what | RED | GREEN and READY |
+|---|---|---|---|
+| 1 | tau 0 bit-clean + the motor entry (target, idle armed, clamp) + the delay ring (items 1 to 3 of section 8, 4 days) | day 1 (a first RED with the three behaviours failing, within the first working session) | day 4 |
+| 2 | ground-effect flag + the inflow selector, CPU and GPU (2 days) | day 5 | day 6 |
+| 3 | torque-row identity + drag parity per airframe (1.5 days) | day 6 | day 7 |
+| 4 | the two-host parity run and the formula band (3 days, mostly harness) | day 8 | day 10 |
+| 5 | the gate: pins equal, SPIR-V rows listed, `-L gpu`, the Docker leg (1 day) | | day 11 |
