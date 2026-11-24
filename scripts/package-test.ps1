@@ -6,7 +6,8 @@
 .DESCRIPTION
     Rerunnable; no administrator rights needed (the installer is per-user). Steps, each printed as PASS or FAIL:
       1  install silently into a fresh temp folder (/CURRENTUSER, /DIR=...): exit 0; the uninstaller is registered under HKCU, not HKLM
-      2  the file list: the editor, assets, licence, notices, release docs, the guide; no tests, no flow_movie, no SDK files
+      2  the file list: the editor, assets (among them the X500 contact model the live smoke's tour loads), licence, notices, release docs, the guide;
+         no tests, no flow_movie, no SDK files
       3  the shortcuts: Spade Editor, Spade Drone Box and Spade User Guide in the Start menu; Spade Editor on the desktop
       4  `spade_sandbox.exe --version` from the install folder prints the version the setup.exe's name carries
          (and `spade_geo_fetch.exe` starts there: --help exits 0, and --check on an empty cache is a miss, exit 3, with no network)
@@ -216,7 +217,7 @@ Check 'uninstaller registered under HKCU only (per-user, no administrator)' ($ke
 
 # ---- 2 file list ----------------------------------------------------------------------------------------------------------------------
 $must = 'spade_sandbox.exe', 'spade_geo_fetch.exe', 'spade_part_import.exe', 'step_convert.py', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'VERSION', 'INSTALL.md', 'RELEASE_NOTES.md', 'SYSTEM_REQUIREMENTS.md',
-        'assets\library', 'assets\scenes', 'assets\worlds', 'assets\fonts\Inter-Regular.ttf', 'docs\user-guide\index.html', 'unins000.exe'
+        'assets\library', 'assets\scenes', 'assets\worlds', 'assets\fonts\Inter-Regular.ttf', 'assets\models\x500_contact.model.yaml', 'docs\user-guide\index.html', 'unins000.exe'
 $missing = @($must | Where-Object { -not (Test-Path -LiteralPath (Join-Path $dir $_)) })
 Check 'installed files present' ($missing.Count -eq 0) "(missing: $($missing -join ', '))"
 $pdf = @(Get-ChildItem -LiteralPath (Join-Path $dir 'docs\user-guide') -Filter '*.pdf' -ErrorAction SilentlyContinue)
