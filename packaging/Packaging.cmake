@@ -59,6 +59,7 @@ install(DIRECTORY
     "${PROJECT_SOURCE_DIR}/assets/scenes"
     "${PROJECT_SOURCE_DIR}/assets/worlds"
     "${PROJECT_SOURCE_DIR}/assets/fonts"
+    "${PROJECT_SOURCE_DIR}/assets/models"
     DESTINATION assets ${_editor_install}
     PATTERN "README.md" EXCLUDE)
 
