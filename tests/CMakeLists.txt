@@ -1007,16 +1007,16 @@ if(WIN32)
 endif()
 
 # The script refuses a directory that is not a CMake build tree, by name and before it removes anything (SdkInstall's scratch prefix is derived
-# from the build directory alone). Run on the source tree's tests/ directory, which has no CMakeCache.txt.
+# from the build directory alone). sdk_install_refusal_check.cmake runs it on a scratch directory under the build tree (no CMakeCache.txt, a sentinel
+# where the prefix would be) and checks the exit is non-zero, the output names the refusal and the sentinel is still there. It is NOT WILL_FAIL plus
+# PASS_REGULAR_EXPRESSION: ctest reads that pair as "the regex was found, so invert", and the correct refusal failed gate 52 (2026-11-23).
 if(WIN32)
     add_test(NAME SdkInstall.RefusesADirectoryThatIsNotABuildTreeBeforeRemovingAnything
-        COMMAND "${CMAKE_COMMAND}" -DBUILD_DIR=${CMAKE_CURRENT_SOURCE_DIR} -DCONFIG=$<CONFIG>
-                -P "${CMAKE_CURRENT_SOURCE_DIR}/sdk_install_geo_fetch.cmake")
+        COMMAND "${CMAKE_COMMAND}" -DBUILD_DIR=${PROJECT_BINARY_DIR} -DCONFIG=$<CONFIG>
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/sdk_install_refusal_check.cmake")
     set_tests_properties(SdkInstall.RefusesADirectoryThatIsNotABuildTreeBeforeRemovingAnything PROPERTIES
         LABELS spade
-        TIMEOUT 60
-        WILL_FAIL TRUE
-        PASS_REGULAR_EXPRESSION "is not a CMake build tree")
+        TIMEOUT 60)
 endif()
 
 # The part import tool's executable, as built (L88): it starts, prints its usage, and refuses a store inside a git work tree, all without
