@@ -265,7 +265,7 @@ A test that fails an assertion prints `[  FAILED  ]` and its message. If its out
 
 ## Pushing
 
-Nothing is pushed without the user's word. `.git/hooks/pre-push` refuses every push unless `SPADE_PUSH_AUTHORIZED` is set for that push. The tracked copy is `scripts/pre-push-guard.sh`; the hook is per-checkout, so install it in each clone (LF line endings).
+Nothing is pushed without the user's word. `.git/hooks/pre-push` refuses every push unless `SPADE_PUSH_AUTHORIZED` is set for that push. The tracked copy is `scripts/pre-push-guard.sh`; the hook is per-checkout, so install it in each clone (LF line endings). It also refuses (even with the word) a push whose tree holds a drive-letter `<X>:\Users\<name>` path, or its MSYS/WSL form `/<x>/Users/<name>` or `/mnt/<x>/Users/<name>` (either slash, any case), with a name that is not on its allow-list (the tests' own fakes, the system's profile folders, placeholders), naming the files, and REPORTS the unpushed commits whose diffs carry one (L-S34); the count in the pushed tree must be 0. A bare `Users/<name>` fragment with no drive anchor is deliberately not matched. After it changes, `cmp` the installed hook against the tracked copy.
 
 ## Committing in a shared tree
 

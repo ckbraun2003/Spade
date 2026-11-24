@@ -52,11 +52,103 @@ trap 'exit 1' PIPE HUP INT TERM
 
 remote_name="$1"
 
+# A USER'S FOLDER STAYS OUT OF A PUBLIC REPOSITORY (Oversight, L-S34, 2026-11-23)
+# -------------------------------------------------------------------------------
+# A path into a user's profile folder names a real person's machine, and the count of them in the pushed tree must
+# be 0. Two shapes, both drive-anchored, any case:
+#   - the Windows form: a letter, a colon, either slash or a doubled backslash, the Users folder, either slash, a name;
+#   - the MSYS and WSL form: /<letter>/Users/<name> and /mnt/<letter>/Users/<name> (the letter dir not glued to a name
+#     before it, so `src/c/Users/x` is not one).
+# This guard refuses otherwise. No real name is written here: the rule is the SHAPE of the path, and a name is let
+# through only when it is on the allow-list below, so a new real name is refused without anyone having listed it.
+# Two things, both run BEFORE the owner's word is looked at: the owner's word releases a push, it does not vouch
+# for what is in it.
+#   TREE    `git grep` at the pushed commit: no file of the tree may hold a path of that shape with a name off the
+#           allow-list. REFUSED, the files named. This is what keeps the public count at 0.
+#   RANGE   the commits this push would export (reachable from the pushed commit, from no remote-tracking ref)
+#           whose diffs carry such a path, added or removed, by commit, file and direction. REPORTED, never
+#           refused: a commit that adds one and a later commit that removes it leaves the tree clean and the history
+#           not, and the push ask has to say so. (L-S34 made the range a report; a refusal would block the redactions.)
+# THE ALLOW-LIST, and where each entry comes from (a name matches whole: `ada` does not let `adaline` through):
+#   - the fakes the repository's own tests and docs use for a user that does not exist (found by grepping the tracked
+#     tree on 2026-11-23): ada, ada-2, adam, someone, zed, me, t, you;
+#   - the system's profile folders: public, default, all users;
+#   - any name that does not START with a letter or a digit is a placeholder, not a person (a literal ellipsis, an
+#     angle-bracket or percent-sign or dollar-sign placeholder, nothing at all).
+# A bare `Users/<name>` fragment with no drive anchor is NOT matched, deliberately: too many false hits (docs and tests
+# say "the Users folder" and show relative paths), so a caption of the shape is not a promise that no such text leaks.
+# Nothing is excluded by file. The messages print file names and commits, never the path. A branch deletion exports
+# nothing and is not looked at.
+host_path_allow='ada,ada-2,adam,someone,zed,me,t,you,public,default,all users'
+host_path_pattern='[A-Za-z]:[\\/]+Users[\\/]+[^\\/]*|(^|[^A-Za-z0-9_.~-])(/mnt)?/[A-Za-z]/Users/+[^\\/]*'
+# awk: bad(line) is true when the line holds a path of that shape whose name is neither a placeholder nor on the list.
+host_path_awk='
+function allowed(name,   i, n, e, c, entries) {
+    if (name == "" || name !~ /^[a-z0-9]/) return 1
+    n = split(allow, entries, ",")
+    for (i = 1; i <= n; i++) {
+        e = entries[i]
+        if (substr(name, 1, length(e)) != e) continue
+        c = substr(name, length(e) + 1, 1)
+        if (c == "" || c !~ /[a-z0-9_.~-]/) return 1
+    }
+    return 0
+}
+function scan(rest, re, strip,   m) {
+    while (match(rest, re)) {
+        m = tolower(substr(rest, RSTART, RLENGTH))
+        rest = substr(rest, RSTART + RLENGTH)
+        sub(strip, "", m)
+        if (!allowed(m)) return 1
+    }
+    return 0
+}
+function bad(line) {
+    # strings, not /regex/ literals: a regex literal passed to a function is evaluated against $0 first
+    if (scan(line, "[A-Za-z]:[\\\\/]+[Uu][Ss][Ee][Rr][Ss][\\\\/]+[^\\\\/]*", "^[a-z]:[\\\\/]+users[\\\\/]+")) return 1
+    return scan(line, "(^|[^A-Za-z0-9_.~-])(/[Mm][Nn][Tt])?/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/+[^\\\\/]*", "^[^/]?(/mnt)?/[a-z]/users/+")
+}'
+
+host_path_check() {  # $1 = the pushed sha; returns 1 (and says why on stderr) when its tree holds such a path
+    sha=$1
+    # `|| true` on each: git grep exits 1 for "no match", which set -e would turn into a refusal for the wrong reason.
+    range_hits=$(git log -p -U0 --no-color --format="%x01%h %s" "$sha" --not --remotes 2>/dev/null |
+        awk -v allow="$host_path_allow" "$host_path_awk"'
+             /^\001/ { c = substr($0, 2); next }
+             /^(\+\+\+|---) / { if ($1 == "+++") f = substr($0, 7); next }
+             /^[+-]/ && bad($0) { d = (substr($0, 1, 1) == "+") ? "adds" : "removes"; k = c SUBSEP f SUBSEP d; if (!seen[k]++) print "      " c "  (" f ", " d ")" }' || true)
+    if [ -n "$range_hits" ]; then
+        echo "" >&2
+        echo "  NOTE (reported, not refused) -- commits this push would export whose diffs carry a user's profile path:" >&2
+        printf '%s\n' "$range_hits" >&2
+        echo "" >&2
+    fi
+    # git grep -o prints `<sha>:<file>:<the match>`; a file name holds no colon here.
+    tree_hits=$(git grep -I -i -o -E "$host_path_pattern" "$sha" -- 2>/dev/null |
+        awk -v allow="$host_path_allow" "$host_path_awk"'
+             { i = index($0, ":"); rest = substr($0, i + 1); j = index(rest, ":"); f = substr(rest, 1, j - 1); m = substr(rest, j + 1)
+               if (bad(m) && !seen[f]++) print f }' || true)
+    [ -z "$tree_hits" ] && return 0
+    echo "" >&2
+    echo "  PUSH REFUSED -- a user's profile path is in the tree being pushed" >&2
+    echo "" >&2
+    echo "  This repository is public. A drive-letter or MSYS/WSL path into a user's folder, with a name that is not on the" >&2
+    echo "  guard's allow-list, must appear nowhere in it (use %USERPROFILE% or a placeholder). The owner's word does" >&2
+    echo "  not cover it. Files that hold one:" >&2
+    printf '%s\n' "$tree_hits" | sed 's/^/      /' >&2
+    echo "" >&2
+    return 1
+}
+
 # stdin: <local ref> <local sha> <remote ref> <remote sha>
 while read -r local_ref local_sha remote_ref remote_sha; do
     [ -z "$remote_ref" ] && continue
 
     branch="${remote_ref#refs/heads/}"
+
+    if [ "$local_sha" != "0000000000000000000000000000000000000000" ]; then
+        host_path_check "$local_sha" || exit 1
+    fi
 
     [ -n "$SPADE_PUSH_AUTHORIZED" ] && continue
 
