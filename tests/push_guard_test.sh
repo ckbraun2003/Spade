@@ -128,4 +128,126 @@ setup
 SPADE_PUSH_AUTHORIZED=1 "$GIT" -C "$clone" push origin HEAD:refs/heads/master 2>&1 | head -n 1 >/dev/null
 check "let through with the owner's word, piped" "master=41 gone=yes realm=no"
 
+# A USER'S PROFILE FOLDER (L-S34, 2026-11-23): a public repository must not receive a drive-letter path into one, with or without the owner's word, unless the
+# name is on the guard's allow-list (the repository's own fakes, the system's profile folders, a placeholder). The tree is REFUSED; the range is only REPORTED.
+# No real name is written in this file: the names below are made up for a person who does not exist and are on no list. Each case is its own push; the
+# leak commits are made on the clone and undone with a hard reset, so one setup serves several.
+REAL="Marlowe"
+U="Users"  # the folder name, kept out of the file text so this file holds no path of the shape the guard refuses
+leak_commit() {  # <file> <the text of the line>
+    printf '%s\n' "$2" >"$clone/$1"
+    "$GIT" -C "$clone" add "$1"
+    "$GIT" -C "$clone" commit -q -m "add $1" || exit 2
+}
+authorized_push() {  # leaves git's stderr in err.txt
+    SPADE_PUSH_AUTHORIZED=1 "$GIT" -C "$clone" push origin HEAD:refs/heads/master >/dev/null 2>err.txt
+}
+no_name_printed() {  # the refusal and the report name files and commits, never the path or the name
+    if grep -qiE "$U[\\\\/]+${REAL}|${REAL}" err.txt; then echo "push-guard-test: FAIL  the output prints the name"; failed=1; fi
+}
+
+# Refused with the owner's word, whatever the spelling: either slash, a doubled backslash, another drive, lower case, a longer name that merely STARTS like a
+# fake (adaline, tom), a real-looking name beside a fake on one line. The first is a real push, the rest run the guard directly, as git does (the push line on its
+# stdin, the clone as the working directory): a real push costs seconds, and the matrix is a dozen cases.
+guard_says() {  # runs the guard for the clone's HEAD as an authorised push; sets guard_rc, leaves the guard's stderr in err.txt
+    head_sha=$("$GIT" -C "$clone" rev-parse HEAD)
+    (cd "$clone" && printf 'refs/heads/master %s refs/heads/master %s\n' "$head_sha" "0000000000000000000000000000000000000000" |
+        SPADE_PUSH_AUTHORIZED=1 sh ../hooks/pre-push origin) >/dev/null 2>"$work/err.txt"
+    guard_rc=$?
+}
+setup
+leak_commit notes.txt "see C:/$U/$REAL/Desktop/y"
+authorized_push
+check "refused with the owner's word in a real push, the tree holds a path with a name on no list" "$untouched"
+grep -q "notes.txt" err.txt && echo "push-guard-test: ok    ... and the refusal names the file" || { echo "push-guard-test: FAIL  the refusal does not name notes.txt"; failed=1; }
+no_name_printed
+"$GIT" -C "$clone" reset -q --hard HEAD~1
+for line in "see C:/$U/$REAL/Desktop/y" "see C:\\$U\\$REAL\\Desktop" "{\"p\":\"D:\\\\$U\\\\$REAL\\\\x\"}" "see c:/$(printf '%s' "$U" | tr 'A-Z' 'a-z')/$(printf '%s' "$REAL" | tr 'A-Z' 'a-z')/x" \
+            "see /c/$U/$REAL/x" "see /C/$U/$REAL/x" "see /mnt/c/$U/$REAL/x" "(/d/$U/$REAL)" "see /c/$U/Adaline/x" \
+            "see C:/$U/Adaline/x" "see C:/$U/Tom/x" "see C:/$U/Ada/x and C:/$U/$REAL/y" "see C:/$U/Ada-3/x"; do
+    leak_commit notes.txt "$line"
+    guard_says
+    if [ "$guard_rc" = 1 ] && grep -q "notes.txt" err.txt; then echo "push-guard-test: ok    refused, naming the file: $line"; else echo "push-guard-test: FAIL  not refused (exit $guard_rc) or the file not named: $line"; failed=1; fi
+    no_name_printed
+    "$GIT" -C "$clone" reset -q --hard HEAD~1
+done
+
+# Let through with the owner's word: the repository's own fakes (any case), the system's profile folders, placeholders, and what is not a drive-letter path.
+# One push carries every line (a push per line made this test twice as slow); if it is refused, each line is tried alone to name the culprit.
+allowed_lines="C:/$U/Ada/x
+C:/$U/Ada-2/x
+C:\\$U\\Adam\\x
+C:/$U/ada/x
+C:/$U/adam/x
+C:/$U/Someone/x
+C:/$U/someone/x
+C:/$U/Zed/x
+C:/$U/me/x
+C:/$U/t/x
+C:/$U/you/x
+C:/$U/.../x
+C:/$U/Public/x
+C:/$U/Default/x
+C:/$U/All $U/x
+C:/$U/<name>/x
+C:/$U/%USERNAME%/x
+C:/$U/\$USER/x
+C:/$U/
+the $U/$REAL folder, no drive letter
+/c/$U/Ada/x and /mnt/c/$U/Public/x and /c/$U/<name>/x are MSYS and WSL paths with a fake, a system folder and a placeholder"
+setup
+leak_commit notes.txt "$allowed_lines"
+authorized_push
+check "let through with the owner's word: every fake, system folder, placeholder and non-drive-letter line, in one file" "master=42 gone=yes realm=no"
+if [ "$(state)" != "master=42 gone=yes realm=no" ]; then
+    printf '%s\n' "$allowed_lines" | while IFS= read -r line; do
+        setup
+        leak_commit notes.txt "$line"
+        guard_says
+        [ "$guard_rc" = 0 ] || echo "push-guard-test: FAIL  refused, but it must be let through: $line"
+    done
+fi
+
+# The range is REPORTED, not refused: a path added by one commit and removed by the next leaves the tree clean, so the push goes through, and the report
+# names both commits by short hash, the file and the direction (never the path).
+setup
+leak_commit notes.txt "see C:/$U/$REAL/Desktop/y"
+added=$("$GIT" -C "$clone" rev-parse --short HEAD)
+leak_commit notes.txt "see the user's folder"
+removed=$("$GIT" -C "$clone" rev-parse --short HEAD)
+authorized_push
+check "let through with the owner's word, a path added by one commit and removed by the next (the tree is clean)" "master=43 gone=yes realm=no"
+grep -q "NOTE (reported, not refused)" err.txt && echo "push-guard-test: ok    ... and the range is reported" || { echo "push-guard-test: FAIL  no range report"; failed=1; }
+grep -q "$added .*(notes.txt, adds)" err.txt && echo "push-guard-test: ok    ... naming the commit that added it ($added)" || { echo "push-guard-test: FAIL  the report does not name $added as adding"; failed=1; }
+grep -q "$removed .*(notes.txt, removes)" err.txt && echo "push-guard-test: ok    ... and the commit that removed it ($removed)" || { echo "push-guard-test: FAIL  the report does not name $removed as removing"; failed=1; }
+no_name_printed
+
+# A fake in the range is not reported.
+setup
+leak_commit notes.txt "see C:/$U/Ada/Desktop/y"
+authorized_push
+check "let through, a fake in the range" "master=42 gone=yes realm=no"
+if grep -q "NOTE (reported" err.txt; then echo "push-guard-test: FAIL  a fake was reported"; failed=1; fi
+
+# A redaction is let through: the remote already holds the path (pushed past the guard, as the old history was), and the push only removes it.
+setup
+leak_commit notes.txt "see C:/$U/$REAL/Desktop/y"
+"$GIT" -C "$clone" push -q --no-verify origin HEAD:refs/heads/master >/dev/null 2>&1
+check "(setup) the path is already on the remote" "master=42 gone=yes realm=no"
+leak_commit notes.txt "see C:/<the user folder>/Desktop/y"
+authorized_push
+check "a redaction is let through with the owner's word" "master=43 gone=yes realm=no"
+
+# Without the owner's word the push is refused, as before, whatever the tree holds.
+setup
+leak_commit notes.txt "clean"
+"$GIT" -C "$clone" push origin HEAD:refs/heads/master >/dev/null 2>&1
+check "refused without the owner's word, a clean tree" "$untouched"
+
+# A deletion exports no commits and is not looked at for the path.
+setup
+leak_commit notes.txt "see C:/$U/$REAL/Desktop/y"
+SPADE_PUSH_AUTHORIZED=1 "$GIT" -C "$clone" push origin :refs/heads/gone >/dev/null 2>&1
+check "a branch deleted with the owner's word, a path in the clone's tree" "master=1 gone=no realm=no"
+
 exit "$failed"

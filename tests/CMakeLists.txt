@@ -1053,9 +1053,11 @@ if(GIT_FOUND AND SPADE_SH)
     cmake_path(SET SPADE_PUSH_GUARD NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/pre-push-guard.sh")
     add_test(NAME PushGuard.RefusesEveryPushWithoutTheOwnersWord
         COMMAND "${SPADE_SH}" "${CMAKE_CURRENT_SOURCE_DIR}/push_guard_test.sh" "${SPADE_PUSH_GUARD}" "${GIT_EXECUTABLE}")
+    # The test makes real clones and pushes: 49-52 s on a quiet box, 73 s while other jobs share it (measured 2026-11-24).
+    # 120 s was too close for a gate that runs debug and release chunks beside other jobs, so 300.
     set_tests_properties(PushGuard.RefusesEveryPushWithoutTheOwnersWord PROPERTIES
         LABELS spade
-        TIMEOUT 120)
+        TIMEOUT 300)
 endif()
 
 # A down Docker daemon gets started (scripts/docker-up.ps1, run first by scripts/docker-leg.ps1 and scripts/gcc-check.sh), with a fake docker and a
