@@ -161,7 +161,7 @@ TEST(FcRunFolder, TheGoodBudgetFolderPassesEveryImplementedCheckAndNamesWhatIsUn
         EXPECT_NE(c.verdict, Verdict::fail) << c.id << ": " << c.detail;
         EXPECT_NE(c.verdict, Verdict::absent) << c.id << ": " << c.detail;
     }
-    EXPECT_EQ(unchecked, (std::set<std::string>{"K4.log", "K4.span", "K4.firmware", "K4.params", "K4.cadence", "K4.estimator", "K4.ekf.fault", "K4.ekf.solution", "K4.ekf.innov", "K4.ekf.failsafe", "K4.ekf.log", "K6.recount", "K11.replay"})) << r.text();
+    EXPECT_EQ(unchecked, (std::set<std::string>{"K4.log", "K4.span", "K4.firmware", "K4.params", "K4.cadence", "K4.estimator", "K4.ekf.fault", "K4.ekf.solution", "K4.ekf.innov", "K4.ekf.failsafe", "K4.ekf.log", "K4.sensors.gap", "K6.recount", "K11.replay"})) << r.text();
     for (const char* id : {"K1", "K2", "K3", "K5", "K6", "K7", "K9", "K10"}) {
         const auto* c = r.find(id, Verdict::pass);
         EXPECT_NE(c, nullptr) << id << " has no passing result\n" << r.text();
@@ -684,7 +684,7 @@ TEST(FcRunFolder, TheTraceAndCommandsOfCoresSampleRunAreRecomputedAndAgree) {
     std::set<std::string> unchecked;
     for (const auto& c : r.results)
         if (c.verdict == Verdict::unchecked) unchecked.insert(c.id);
-    EXPECT_EQ(unchecked, (std::set<std::string>{"K4.log", "K4.span", "K4.firmware", "K4.params", "K4.cadence", "K4.estimator", "K4.ekf.fault", "K4.ekf.solution", "K4.ekf.innov", "K4.ekf.failsafe", "K4.ekf.log", "K6.recount", "K11.replay"}));
+    EXPECT_EQ(unchecked, (std::set<std::string>{"K4.log", "K4.span", "K4.firmware", "K4.params", "K4.cadence", "K4.estimator", "K4.ekf.fault", "K4.ekf.solution", "K4.ekf.innov", "K4.ekf.failsafe", "K4.ekf.log", "K4.sensors.gap", "K6.recount", "K11.replay"}));
 }
 
 TEST(FcRunFolder, TheLoaderReadsAFolderFromDiskAndTheVerdictIsTheSame) {
@@ -1626,6 +1626,179 @@ TEST(FcRunFolder, K4_TheEkfChecksAreUncheckedWhenWhatTheyReadIsNotThere) {
     for (const char* id : kEkfIds) EXPECT_NE(none.find(id, Verdict::unchecked), nullptr) << id << "\n" << none.text();
 }
 
+// K4.sensors.gap: PX4's baro (`vehicle_air_data`) and magnetometer (`vehicle_magnetometer`), instance 0, keep publishing. The bars are in the checker's block (a gap
+// must be OVER the bar to fail: exactly 100,000 us for air data and exactly 250,000 us for the magnetometer pass). The first sample counts as late when it comes
+// more than the bar after the first estimator_status stamp (the lead-in), the last as early when it comes more than the bar before the last (the tail).
+namespace {
+
+[[nodiscard]] std::vector<uint64_t> every(uint64_t first, uint64_t last, uint64_t step) {
+    std::vector<uint64_t> v;
+    for (uint64_t t = first; t <= last; t += step) v.push_back(t);
+    return v;
+}
+
+[[nodiscard]] std::vector<uint64_t> joined(std::vector<uint64_t> a, const std::vector<uint64_t>& b) {
+    a.insert(a.end(), b.begin(), b.end());
+    return a;
+}
+
+// estimator_status stamps 100,000 to 10,100,000 us (health_log's healthy rows). Air data every 60,000 us (167 samples, the last at 10,060,000), the magnetometer
+// every 130,000 us (77 samples, the last at 9,980,000): each a gap, a lead-in and a tail well inside its bar.
+[[nodiscard]] std::vector<uint64_t> healthy_air() { return every(100000, 10100000, 60000); }
+[[nodiscard]] std::vector<uint64_t> healthy_mag() { return every(100000, 10100000, 130000); }
+
+struct SensorOpts {
+    bool air = true;
+    bool mag = true;
+    bool status = true;
+    uint8_t multi = 0;
+};
+
+[[nodiscard]] std::vector<ux::Msg> sensor_log(const std::vector<uint64_t>& air, const std::vector<uint64_t>& mag, const SensorOpts& o = SensorOpts{}) {
+    using namespace ux;
+    HealthOpts h;
+    h.status = o.status;
+    h.ratios = false;
+    h.failsafe = false;
+    std::vector<Msg> v = health_log(healthy_rows(), {LoggedLine{'6', 200000, "boot"}}, h);
+    std::vector<Msg> formats;
+    std::vector<Msg> subs;
+    std::vector<Msg> data;
+    const auto topic = [&](uint16_t id, const char* name, const std::vector<uint64_t>& stamps) {
+        formats.push_back(Msg{'F', std::string(name) + ":uint64_t timestamp;float[3] xyz;"});
+        std::string a(1, static_cast<char>(o.multi));
+        put16(a, id);
+        a += name;
+        subs.push_back(Msg{'A', a});
+        for (const uint64_t t : stamps) data.push_back(Msg{'D', timed_d(id, t, 12)});
+    };
+    if (o.air) topic(20, "vehicle_air_data", air);
+    if (o.mag) topic(21, "vehicle_magnetometer", mag);
+    v.insert(v.begin() + kFStatus + 1, formats.begin(), formats.end());
+    const auto first_data = std::find_if(v.begin(), v.end(), [](const Msg& m) { return m.type == 'D'; });
+    v.insert(first_data, subs.begin(), subs.end());
+    v.insert(v.end(), data.begin(), data.end());
+    return v;
+}
+
+[[nodiscard]] std::pair<Verdict, std::string> gap_of(const std::vector<ux::Msg>& v) { return ekf_of(v, "K4.sensors.gap"); }
+
+// A stream that runs every `step` us, stops at `before`, and starts again `gap` us later (so exactly one gap of `gap` us, after the sample at `before`).
+[[nodiscard]] std::vector<uint64_t> with_gap(uint64_t step, uint64_t before, uint64_t gap) {
+    return joined(every(100000, before, step), every(before + gap, 10100000, step));
+}
+
+}  // namespace
+
+TEST(FcRunFolder, K4_BothSensorsPublishingWithinTheirBarsPass) {
+    const auto r = gap_of(sensor_log(healthy_air(), healthy_mag()));
+    EXPECT_EQ(r.first, Verdict::pass) << r.second;
+    for (const char* phrase : {"vehicle_air_data: 167 samples, largest gap 60000 us", "vehicle_magnetometer: 77 samples, largest gap 130000 us",
+                               "at most 100000 us", "at most 250000 us"})
+        EXPECT_NE(r.second.find(phrase), std::string::npos) << phrase << "\n" << r.second;
+}
+
+TEST(FcRunFolder, K4_AGapMustBeOverTheBarToFailTheEdgeItselfPasses) {
+    // 4,960,000 us is the 82nd air-data sample (100,000 + 81 x 60,000); 3,870,000 us is the 30th magnetometer sample (100,000 + 29 x 130,000).
+    auto air = [](uint64_t gap) { return gap_of(sensor_log(with_gap(60000, 4960000, gap), healthy_mag())); };
+    auto mag = [](uint64_t gap) { return gap_of(sensor_log(healthy_air(), with_gap(130000, 3870000, gap))); };
+    EXPECT_EQ(air(100000).first, Verdict::pass) << air(100000).second << "\nexactly the bar passes";
+    EXPECT_NE(air(100000).second.find("largest gap 100000 us"), std::string::npos) << air(100000).second;
+    auto r = air(100001);
+    EXPECT_EQ(r.first, Verdict::fail) << r.second;
+    EXPECT_NE(r.second.find("vehicle_air_data: a gap of 100001 us after the sample at 4960000 us (4.860000 s after the first estimator_status stamp) is over the 100000 us bar"),
+              std::string::npos)
+        << r.second;
+    EXPECT_EQ(r.second.find("the largest is"), std::string::npos) << "the only gap over the bar is the largest: it is not said twice\n" << r.second;
+    EXPECT_EQ(mag(250000).first, Verdict::pass) << mag(250000).second << "\nexactly the bar passes";
+    r = mag(250001);
+    EXPECT_EQ(r.first, Verdict::fail) << r.second;
+    EXPECT_NE(r.second.find("vehicle_magnetometer: a gap of 250001 us after the sample at 3870000 us (3.770000 s after the first estimator_status stamp) is over the 250000 us bar"),
+              std::string::npos)
+        << r.second;
+    EXPECT_NE(r.second.find("vehicle_air_data: 167 samples"), std::string::npos) << "the sensor that passed is still reported\n" << r.second;
+    // A bar of one sensor is not the other's.
+    EXPECT_EQ(gap_of(sensor_log(with_gap(60000, 4960000, 120000), healthy_mag())).first, Verdict::fail) << "120 ms is over the air-data bar";
+    EXPECT_EQ(gap_of(sensor_log(healthy_air(), with_gap(130000, 3870000, 120000))).first, Verdict::pass) << "120 ms is inside the magnetometer bar";
+}
+
+TEST(FcRunFolder, K4_TheFirstGapOverTheBarIsNamedAndTheLargestWhenItIsAnother) {
+    // gaps of 150,000 us (after 1,000,000) and 400,000 us (after 3,010,000): the first is named by its start stamp in microseconds on the log's clock, the largest too.
+    const std::vector<uint64_t> air = joined(joined(every(100000, 1000000, 60000), every(1150000, 3010000, 60000)), every(3410000, 10100000, 60000));
+    const auto r = gap_of(sensor_log(air, healthy_mag()));
+    EXPECT_EQ(r.first, Verdict::fail) << r.second;
+    EXPECT_NE(r.second.find("a gap of 150000 us after the sample at 1000000 us (0.900000 s after the first estimator_status stamp) is over the 100000 us bar"), std::string::npos)
+        << r.second;
+    EXPECT_NE(r.second.find("the largest is a gap of 400000 us after the sample at 3010000 us (2.910000 s"), std::string::npos) << r.second;
+}
+
+TEST(FcRunFolder, K4_TheLeadInAndTheTailCountAsGaps) {
+    // Lead-in: the first sample comes after the first estimator_status stamp (100,000 us).
+    auto lead = [](uint64_t first) { return gap_of(sensor_log(every(first, 10100000, 60000), healthy_mag())); };
+    EXPECT_EQ(lead(200000).first, Verdict::pass) << lead(200000).second << "\na lead-in of exactly the bar passes";
+    EXPECT_NE(lead(200000).second.find("lead-in 100000 us"), std::string::npos) << lead(200000).second;
+    auto r = lead(200001);
+    EXPECT_EQ(r.first, Verdict::fail) << r.second;
+    EXPECT_NE(r.second.find("vehicle_air_data: the first sample is at 200001 us (0.100001 s after the first estimator_status stamp), 100001 us after the first estimator_status stamp, over the 100000 us bar"),
+              std::string::npos)
+        << r.second;
+    r = lead(50000);
+    EXPECT_EQ(r.first, Verdict::pass) << "a first sample before the estimator's first stamp leaves no lead-in\n" << r.second;
+    EXPECT_NE(r.second.find("lead-in 0 us"), std::string::npos) << r.second;
+    // Tail: the last sample comes before the last estimator_status stamp (10,100,000 us). 9,940,000 us is the 165th air-data sample.
+    auto tail = [](uint64_t last) { return gap_of(sensor_log(joined(every(100000, 9940000, 60000), {last}), healthy_mag())); };
+    EXPECT_EQ(tail(10000000).first, Verdict::pass) << tail(10000000).second << "\na tail of exactly the bar passes";
+    EXPECT_NE(tail(10000000).second.find("tail 100000 us"), std::string::npos) << tail(10000000).second;
+    r = tail(9999999);
+    EXPECT_EQ(r.first, Verdict::fail) << r.second;
+    EXPECT_NE(r.second.find("vehicle_air_data: the last sample is at 9999999 us (9.899999 s after the first estimator_status stamp), 100001 us before the last estimator_status stamp, over the 100000 us bar"),
+              std::string::npos)
+        << r.second;
+    r = gap_of(sensor_log(joined(every(100000, 10060000, 60000), {10120000}), healthy_mag()));  // the last sample is after the estimator's last stamp (10,100,000 us)
+    EXPECT_EQ(r.first, Verdict::pass) << "a last sample after the estimator's last stamp leaves no tail\n" << r.second;
+    EXPECT_NE(r.second.find("tail 0 us"), std::string::npos) << r.second;
+}
+
+TEST(FcRunFolder, K4_ASensorThatNeverPublishesIsUncheckedAndNamedNeverAPass) {
+    auto r = gap_of(sensor_log({}, healthy_mag(), SensorOpts{false, true, true, 0}));
+    EXPECT_EQ(r.first, Verdict::unchecked) << r.second;
+    EXPECT_NE(r.second.find("vehicle_air_data"), std::string::npos) << r.second;
+    EXPECT_NE(r.second.find("never publishes"), std::string::npos) << r.second;
+    r = gap_of(sensor_log(healthy_air(), {}, SensorOpts{true, false, true, 0}));
+    EXPECT_EQ(r.first, Verdict::unchecked) << r.second;
+    EXPECT_NE(r.second.find("vehicle_magnetometer"), std::string::npos) << r.second;
+    r = gap_of(sensor_log({}, {}, SensorOpts{false, false, true, 0}));
+    EXPECT_EQ(r.first, Verdict::unchecked) << r.second;
+    EXPECT_NE(r.second.find("vehicle_air_data"), std::string::npos) << r.second;
+    EXPECT_NE(r.second.find("vehicle_magnetometer"), std::string::npos) << r.second;
+    r = gap_of(sensor_log(healthy_air(), healthy_mag(), SensorOpts{true, true, true, 1}));
+    EXPECT_EQ(r.first, Verdict::unchecked) << "only instance 1 is there; instance 0 is read\n" << r.second;
+    // A failing sensor and one that never publishes: the failure is not hidden.
+    r = gap_of(sensor_log(with_gap(60000, 4960000, 300000), {}, SensorOpts{true, false, true, 0}));
+    EXPECT_EQ(r.first, Verdict::fail) << r.second;
+    EXPECT_NE(r.second.find("a gap of 300000 us"), std::string::npos) << r.second;
+    EXPECT_NE(r.second.find("vehicle_magnetometer"), std::string::npos) << "and the one that is missing is still named\n" << r.second;
+}
+
+TEST(FcRunFolder, K4_TheSensorGapsAreUncheckedWithoutTheEstimatorsStampsOrWithAnUnreadLog) {
+    auto r = gap_of(sensor_log(healthy_air(), healthy_mag(), SensorOpts{true, true, false, 0}));
+    EXPECT_EQ(r.first, Verdict::unchecked) << r.second;
+    EXPECT_NE(r.second.find("estimator_status"), std::string::npos) << "the lead-in and the tail are counted from its stamps\n" << r.second;
+    std::vector<ux::Msg> unknown = sensor_log(healthy_air(), healthy_mag());
+    unknown.insert(unknown.begin() + ux::kSubGyro, ux::Msg{'Z', "x"});
+    EXPECT_EQ(gap_of(unknown).first, Verdict::unchecked) << "an unread log's samples are not read";
+    const Report none = spade::fc::check_run_folder(spade::fc::RunFolder{good_measured()});
+    EXPECT_NE(none.find("K4.sensors.gap", Verdict::unchecked), nullptr) << none.text();
+}
+
+TEST(FcRunFolder, K4_AStampEarlierThanTheOneBeforeFailsTheSensorNamingIt) {
+    std::vector<uint64_t> air = healthy_air();
+    air[20] = air[19] - 1;  // the clock went backwards
+    const auto r = gap_of(sensor_log(air, healthy_mag()));
+    EXPECT_EQ(r.first, Verdict::fail) << r.second;
+    EXPECT_NE(r.second.find("vehicle_air_data: a stamp is earlier than the one before it"), std::string::npos) << r.second;
+}
+
 // A real PX4 log: SPADE_FC_ULOG names a .ulg file (for example one a live fc run left in px4-log/); unset, the case skips by name, so the 12 MB logs of
 // the live runs are never committed. It checks the reader against the real thing, including the message types and sizes the spec page extract lacked.
 TEST(FcRunFolder, TheRealPx4LogIsWellFormed) {
@@ -1700,6 +1873,10 @@ TEST(FcRunFolder, TheRealPx4LogCoversTheRunsSimulatedTime) {
         std::cout << id << ": " << c->detail << "\n";
         EXPECT_EQ(c->verdict, Verdict::pass) << id << ": " << c->detail;
     }
+    const auto* gaps = result_of(folder, "K4.sensors.gap");
+    ASSERT_NE(gaps, nullptr);
+    std::cout << "K4.sensors.gap: " << gaps->detail << "\n";
+    EXPECT_EQ(gaps->verdict, Verdict::pass) << gaps->detail;
     const auto* params = result_of(folder, "K4.params");
     ASSERT_NE(params, nullptr);
     std::cout << "K4.params: " << static_cast<int>(params->verdict) << " " << params->detail << "\n";
@@ -1713,6 +1890,8 @@ TEST(FcRunFolder, TheRealPx4LogCoversTheRunsSimulatedTime) {
 // the `gravity` ratio, at the touchdown, and K4.ekf.log, on five ERR-level lines each ("[vehicle_magnetometer] MAG #0 failed:  STALE!" at 3.4 and 3.6 s,
 // "[vehicle_air_data] BARO #n failed:  STALE!" later: the autopilot's own sensor validators saw no new sample in time); the other checks are clean. The tests
 // flip loudly when Core's IMU fix or the link's sensor timing changes that.
+// K4.sensors.gap also fails in both (the bars and their source are in fc_run_folder_check.hpp): the baro and the magnetometer stop publishing for 4 to 22 s on the ground,
+// the flight world having no sensor noise (Interface's account, interface/sensor-noise, not tested here); the live ground logs hold no gap over 52 ms (air data) or 108 ms (magnetometer).
 // THE CLOCK: a log stamp is PX4's ULog `timestamp` in microseconds, which runs on the lockstep link's own clock (the HIL_SENSOR time_usec; K4.span
 // compares it to the run's last time and it matches). Spade's truth trace (flight-trace.csv, t_s) counts from tick 0, so
 //   log stamp = boot_end_time_usec + t_s * 1e6, with boot_end_time_usec = (boot_steps + 1) * 4000 us.
@@ -1742,7 +1921,8 @@ namespace {
     return spade::fc::check_run_folder(spade::fc::RunFolder{good_measured(), *bytes_out, std::nullopt, std::nullopt, 4000});
 }
 
-void expect_flight_finding(const char* env, std::initializer_list<const char*> innov_phrases, std::initializer_list<const char*> log_phrases) {
+void expect_flight_finding(const char* env, std::initializer_list<const char*> innov_phrases, std::initializer_list<const char*> log_phrases,
+                          std::initializer_list<const char*> gap_phrases) {
     if (env_path_of(env).empty()) GTEST_SKIP() << env << " is not set (the path of a flight .ulg)";
     std::string bytes;
     const Report r = flight_report_of(env, &bytes);
@@ -1762,15 +1942,26 @@ void expect_flight_finding(const char* env, std::initializer_list<const char*> i
     std::cout << "K4.ekf.log: " << log->detail << "\n";
     EXPECT_EQ(log->verdict, Verdict::fail) << "the known finding: five sensor-stale ERR lines (if this now passes, the finding is gone: say so, then update this pin)\n" << log->detail;
     for (const char* phrase : log_phrases) EXPECT_NE(log->detail.find(phrase), std::string::npos) << phrase << "\n" << log->detail;
+    const auto* gaps = result_of(r, "K4.sensors.gap");
+    ASSERT_NE(gaps, nullptr);
+    std::cout << "K4.sensors.gap: " << gaps->detail << "\n";
+    EXPECT_EQ(gaps->verdict, Verdict::fail) << "the known finding: the baro and the magnetometer stop publishing for seconds (if this now passes, interface/sensor-noise has landed: say so, then update this pin)\n"
+                                           << gaps->detail;
+    for (const char* phrase : gap_phrases) EXPECT_NE(gaps->detail.find(phrase), std::string::npos) << phrase << "\n" << gaps->detail;
 }
 }  // namespace
 
 TEST(FcRunFolder, TheRealFlightLogOfDryRun3HasTheKnownTouchdownGravityFinding) {
     expect_flight_finding("SPADE_FC_ULOG_DRY3", {"gravity[0] is 3.858 at 41816000 us (41.312000 s", "2 of 4138 samples", "gravity[1] 5.972"},
-                          {"at 3396000 us is level 3 (ERR)", "46 bytes", "5 of "});
+                          {"at 3396000 us is level 3 (ERR)", "46 bytes", "5 of "},
+                          {"vehicle_air_data: a gap of 4560000 us after the sample at 724000 us (0.220000 s after the first estimator_status stamp) is over the 100000 us bar; "
+                           "the largest is a gap of 16680000 us after the sample at 5944000 us",
+                           "vehicle_magnetometer: a gap of 18192000 us after the sample at 3364000 us (2.860000 s after the first estimator_status stamp) is over the 250000 us bar"});
 }
 
 TEST(FcRunFolder, TheRealFlightLogOfDryRun4bHasTheKnownTouchdownGravityFinding) {
     expect_flight_finding("SPADE_FC_ULOG_DRY4B", {"gravity[0] is 7.419 at 44020000 us (43.696000 s", "1 of 4572 samples", "gravity[2] 40.41"},
-                          {"at 3556000 us is level 3 (ERR)", "46 bytes", "5 of "});
+                          {"at 3556000 us is level 3 (ERR)", "46 bytes", "5 of "},
+                          {"vehicle_air_data: a gap of 21840000 us after the sample at 884000 us (0.560000 s after the first estimator_status stamp) is over the 100000 us bar",
+                           "vehicle_magnetometer: a gap of 18200000 us after the sample at 3544000 us (3.220000 s after the first estimator_status stamp) is over the 250000 us bar"});
 }
